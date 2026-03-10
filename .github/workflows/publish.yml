@@ -8,6 +8,8 @@ on:
     types: [closed]
   # Optional: Allows manual trigger for initial setup/testing
   workflow_dispatch:
+  #push
+  push:
 
 jobs:
   build-and-push-image:
