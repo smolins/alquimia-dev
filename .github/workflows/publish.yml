@@ -1,19 +1,11 @@
 name: Publish Docker Image to GHCR
 
-# Trigger upon a PR being opened or updated
+# Only trigger manually
 on:
-  pull_request:
-    branches:
-      - master
   workflow_dispatch:
-    branches:
-      - master
-      - container
 
 jobs:
   build-and-push-image:
-    # Triggered manually or when a PR is issued (not on merge)
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
