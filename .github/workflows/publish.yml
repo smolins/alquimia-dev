@@ -6,15 +6,16 @@ on:
     branches:
       - master
     types: [closed]
-  # Optional: Allows manual trigger for initial setup/testing
-  workflow_dispatch:
-  #push
+  # Allow push to master (merged PR or direct push)
   push:
+    branches:
+      - master
+  workflow_dispatch:
 
 jobs:
   build-and-push-image:
-    # Ensure this only runs if the PR was actually merged, not just closed
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    # Ensure this only runs if the PR was actually merged, it's a direct push to master, or manual dispatch
+    if: github.event_name == 'push' || github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
