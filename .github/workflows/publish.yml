@@ -1,0 +1,54 @@
+name: Publish Docker Image to GHCR
+
+# Trigger upon a PR being merged into the master branch
+on:
+  pull_request:
+    branches:
+      - master
+    types: [closed]
+  # Optional: Allows manual trigger for initial setup/testing
+  workflow_dispatch:
+
+jobs:
+  build-and-push-image:
+    # Ensure this only runs if the PR was actually merged, not just closed
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Lowercases the name automatically for ghcr.io
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=ref,event=branch
+            type=sha,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Increase timeout as PETSc build can be slow
+          no-cache: false
