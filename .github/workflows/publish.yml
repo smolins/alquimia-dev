@@ -6,6 +6,9 @@ on:
     branches:
       - master
   workflow_dispatch:
+    branches:
+      - master
+      - container
 
 jobs:
   build-and-push-image:
