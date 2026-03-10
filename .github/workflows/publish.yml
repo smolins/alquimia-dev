@@ -1,21 +1,16 @@
 name: Publish Docker Image to GHCR
 
-# Trigger upon a PR being merged into the master branch
+# Trigger upon a PR being opened or updated
 on:
   pull_request:
-    branches:
-      - master
-    types: [closed]
-  # Allow push to master (merged PR or direct push)
-  push:
     branches:
       - master
   workflow_dispatch:
 
 jobs:
   build-and-push-image:
-    # Ensure this only runs if the PR was actually merged, it's a direct push to master, or manual dispatch
-    if: github.event_name == 'push' || github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    # Triggered manually or when a PR is issued (not on merge)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
