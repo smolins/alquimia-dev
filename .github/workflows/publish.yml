@@ -32,12 +32,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Lowercase repository name
+        run: echo "IMAGE_NAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # Lowercases the name automatically for ghcr.io
-          images: ghcr.io/${{ github.repository }}
+          # Use lowercased image name
+          images: ghcr.io/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
             type=ref,event=branch
