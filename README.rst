@@ -62,6 +62,25 @@ Required packages and versions
 Currently, to be built, Alquimia requires PETSc and at least one of the two
 geochemical engines, either PFLOTRAN or CrunchFlow.
 
+Automated Build (Superbuild)
+============================
+
+If you do not have PETSc, PFLOTRAN, or CrunchFlow installed, you can use the
+automated build system to download and build them for you.
+
+::
+
+    mkdir build && cd build
+    cmake -DALQUIMIA_SUPERBUILD=ON ..
+    make
+
+This will install everything locally in the build/install directory.
+You may still use one of the -DXSDK_WITH_PFLOTRAN=OFF or -DXSDK_WITH_CRUNCHFLOW=ON options to skip
+building one of the engines but not both at the same time.
+
+Manual Build
+============
+
 Alquimia is part of the `Extreme-scale Scientific Software Development Kit (xSDK) <https://xsdk.info>`_, 
 along with PETSc and PFLOTRAN. xSDK releases ensure that certain version of these
 software packages will build together. In addition to the instructions that follow,
