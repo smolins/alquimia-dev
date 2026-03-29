@@ -24,7 +24,7 @@ endif()
 
 find_package(BLAS QUIET)
 find_package(LAPACK QUIET)
-if(BLAS_FOUND AND LAPACK_FOUND)
+if(BLAS_FOUND AND LAPACK_FOUND AND FALSE)
   message(STATUS "Found system BLAS/LAPACK")
   set(PETSC_BLASLAPACK_ARGS "")
 else()
@@ -188,7 +188,7 @@ ExternalProject_Add(alquimia_core
         ${COMMON_CMAKE_ARGS}
         ${ALQUIMIA_EXTRA_ARGS}
         -DPETSC_DIR=${INSTALL_DIR}
-        -DPETSC_ARCH=
+        -DPETSC_ARCH=.
         -DALQUIMIA_SUPERBUILD=OFF
 )
 
