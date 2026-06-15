@@ -49,6 +49,9 @@ option(XSDK_WITH_PFLOTRAN "Enables support for the PFlotran chemistry engine [OF
 option(XSDK_WITH_CRUNCHFLOW "Enables support for the CrunchFlow chemistry engine [OFF]." OFF)
 #option(TPL_CRUNCHFLOW_LIBRARIES "List of absolute paths to CrunchFlow link libraries [].")
 #option(TPL_CRUNCHFLOW_INCLUDE_DIRS "List of absolute paths to CrunchFlow include directories [].")
+option(XSDK_WITH_PHREEQC "Enables support for the PhreeqcRM chemistry engine [OFF]." OFF)
+#option(TPL_PHREEQC_LIBRARIES "List of absolute paths to PhreeqcRM link libraries [].")
+#option(TPL_PHREEQC_INCLUDE_DIRS "List of absolute paths to PhreeqcRM include directories [].")
 
 # For now, we disable shared libs on Macs.
 if (APPLE)
@@ -169,11 +172,11 @@ if (XSDK_WITH_CRUNCHFLOW)
   endforeach()
 
   if (NOT TPL_CRUNCHFLOW_INCLUDE_DIRS)
-    message(FATAL "TPL_CRUNCHFLOW_INCLUDE_DIRS option be set for CrunchFlow support to be enabled.")
+    message(FATAL_ERROR "TPL_CRUNCHFLOW_INCLUDE_DIRS option be set for CrunchFlow support to be enabled.")
   endif()
   foreach(dir ${TPL_CRUNCHFLOW_INCLUDE_DIRS})
     if (NOT EXISTS ${dir})
-      message(FATAL "CrunchFlow include directory not found: ${dir}")
+      message(FATAL_ERROR "CrunchFlow include directory not found: ${dir}")
     endif()
   endforeach()
 
@@ -183,6 +186,33 @@ if (XSDK_WITH_CRUNCHFLOW)
   set(ALQUIMIA_NEED_PETSC 1)
 else()
   set(ALQUIMIA_HAVE_CRUNCHFLOW 0)
+endif()
+
+if (XSDK_WITH_PHREEQC)
+  if (NOT TPL_PHREEQC_LIBRARIES)
+    message(FATAL_ERROR "TPL_PHREEQC_LIBRARIES option be set for PhreeqcRM support to be enabled.")
+  endif()
+  foreach(lib ${TPL_PHREEQC_LIBRARIES})
+    if (NOT EXISTS ${lib})
+      message(FATAL_ERROR "PhreeqcRM library not found: ${lib}")
+    endif()
+  endforeach()
+
+  if (NOT TPL_PHREEQC_INCLUDE_DIRS)
+    message(FATAL_ERROR "TPL_PHREEQC_INCLUDE_DIRS option be set for PhreeqcRM support to be enabled.")
+  endif()
+  foreach(dir ${TPL_PHREEQC_INCLUDE_DIRS})
+    if (NOT EXISTS ${dir})
+      message(FATAL_ERROR "PhreeqcRM include directory not found: ${dir}")
+    endif()
+  endforeach()
+
+  message(STATUS "Enabled support for PhreeqcRM chemistry engine.")
+  list(APPEND ALQUIMIA_ENGINES phreeqc)
+  set(ALQUIMIA_HAVE_PHREEQC 1)
+  # Notice: We intentionally DO NOT set ALQUIMIA_NEED_PETSC to 1 here.
+else()
+  set(ALQUIMIA_HAVE_PHREEQC 0)
 endif()
 
 # If we're not building with any engines, there's no point!

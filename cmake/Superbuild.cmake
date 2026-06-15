@@ -38,6 +38,7 @@ else()
   set(PETSC_DEBUG_ARG "--with-debugging=0")
 endif()
 
+if (XSDK_WITH_PFLOTRAN OR XSDK_WITH_CRUNCHFLOW)
 # PETSc
 ExternalProject_Add(petsc
     GIT_REPOSITORY https://gitlab.com/petsc/petsc.git
@@ -49,17 +50,22 @@ ExternalProject_Add(petsc
     BUILD_COMMAND make
     INSTALL_COMMAND make install
 )
+endif()
 
 # Chemistry engines options
 option(XSDK_WITH_PFLOTRAN "Enables support for the PFlotran chemistry engine [ON]." ON)
 option(XSDK_WITH_CRUNCHFLOW "Enables support for the CrunchFlow chemistry engine [ON]." ON)
+option(XSDK_WITH_PHREEQC "Enables support for the PhreeqcRM chemistry engine [ON]." ON)
 option(ALQUIMIA_BUILD_STANDALONE_ENGINES "Build standalone versions of requested chemistry engines [OFF]." OFF)
 
-if (NOT XSDK_WITH_PFLOTRAN AND NOT XSDK_WITH_CRUNCHFLOW)
-  message(FATAL_ERROR "At least one chemistry engine must be enabled (XSDK_WITH_PFLOTRAN or XSDK_WITH_CRUNCHFLOW).")
+if (NOT XSDK_WITH_PFLOTRAN AND NOT XSDK_WITH_CRUNCHFLOW AND NOT XSDK_WITH_PHREEQC)
+  message(FATAL_ERROR "At least one chemistry engine must be enabled (XSDK_WITH_PFLOTRAN, XSDK_WITH_CRUNCHFLOW, or XSDK_WITH_PHREEQC).")
 endif()
 
-set(ALQUIMIA_DEPS petsc)
+set(ALQUIMIA_DEPS)
+if (XSDK_WITH_PFLOTRAN OR XSDK_WITH_CRUNCHFLOW)
+  list(APPEND ALQUIMIA_DEPS petsc)
+endif()
 set(ALQUIMIA_EXTRA_ARGS)
 
 # PFLOTRAN
@@ -176,6 +182,29 @@ if (XSDK_WITH_CRUNCHFLOW)
   endif()
 else()
   list(APPEND ALQUIMIA_EXTRA_ARGS -DXSDK_WITH_CRUNCHFLOW=OFF)
+endif()
+
+# PhreeqcRM
+if (XSDK_WITH_PHREEQC)
+  ExternalProject_Add(phreeqcrm
+      GIT_REPOSITORY https://github.com/phreeqc-dev/phreeqcrm.git
+      GIT_TAG v3.9.0
+      PREFIX ${CMAKE_BINARY_DIR}/external/phreeqcrm
+      PATCH_COMMAND find . -name "CMakeLists.txt" -exec sed -i "s/cmake_minimum_required(VERSION .*)/cmake_minimum_required(VERSION 3.14)/g" {} +
+      CMAKE_ARGS
+          ${COMMON_CMAKE_ARGS}
+          -DBUILD_SHARED_LIBS=OFF
+          -DPHREEQCRM_BUILD_MPI=OFF
+          -DPHREEQCRM_DISABLE_CPP11=OFF
+          -DBUILD_TESTING=OFF
+  )
+  list(APPEND ALQUIMIA_DEPS phreeqcrm)
+  list(APPEND ALQUIMIA_EXTRA_ARGS 
+       -DXSDK_WITH_PHREEQC=ON
+       -DTPL_PHREEQC_LIBRARIES=${INSTALL_DIR}/lib/libPhreeqcRM.a
+       -DTPL_PHREEQC_INCLUDE_DIRS=${INSTALL_DIR}/include)
+else()
+  list(APPEND ALQUIMIA_EXTRA_ARGS -DXSDK_WITH_PHREEQC=OFF)
 endif()
 
 # Alquimia itself

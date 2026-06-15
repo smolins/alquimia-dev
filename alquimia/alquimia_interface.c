@@ -31,6 +31,7 @@
 
 #include "alquimia/pflotran_alquimia_interface.h"
 #include "alquimia/crunch_alquimia_interface.h"
+#include "alquimia/phreeqc_alquimia_interface.h"
 
 #include "alquimia/alquimia_util.h"
 #include "alquimia/alquimia_constants.h"
@@ -82,11 +83,29 @@ void CreateAlquimiaInterface(const char* const engine_name,
              "\nERROR : CreateAlquimiaInterface() : CrunchFlow interface requested, but alquimia was not compiled with CrunchFlow!\n");
 #endif
 
+  } else if (AlquimiaCaseInsensitiveStringCompare(engine_name,
+                                                  kAlquimiaStringPhreeqc)) {
+#if ALQUIMIA_HAVE_PHREEQC
+    interface->Setup = &phreeqc_alquimia_setup;
+    interface->Shutdown = &phreeqc_alquimia_shutdown;
+    interface->ProcessCondition = &phreeqc_alquimia_processcondition;
+    interface->ReactionStepOperatorSplit = &phreeqc_alquimia_reactionstepoperatorsplit;
+    interface->GetAuxiliaryOutput = &phreeqc_alquimia_getauxiliaryoutput;
+    interface->GetProblemMetaData = &phreeqc_alquimia_getproblemmetadata;
+    status->error = kAlquimiaNoError;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "CreateAlquimiaInterface() : successfully created PhreeqcRM interface.\n");
+#else
+    status->error = kAlquimiaErrorInvalidEngine;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "\nERROR : CreateAlquimiaInterface() : PhreeqcRM interface requested, but alquimia was not compiled with PhreeqcRM!\n");
+#endif
+
   } else {
     status->error = kAlquimiaErrorInvalidEngine;
     snprintf(status->message, kAlquimiaMaxStringLength,
-             "\nERROR : CreateAlquimiaInterface() : Invalid interface name '%s'.\n  Valid names are:\n    '%s'\n    '%s'\n",
-             engine_name, kAlquimiaStringPFloTran, kAlquimiaStringCrunchFlow);
+             "\nERROR : CreateAlquimiaInterface() : Invalid interface name '%s'.\n  Valid names are:\n    '%s'\n    '%s'\n    '%s'\n",
+             engine_name, kAlquimiaStringPFloTran, kAlquimiaStringCrunchFlow, kAlquimiaStringPhreeqc);
   }
 
 }  /* end CreateAlquimiaInterface() */

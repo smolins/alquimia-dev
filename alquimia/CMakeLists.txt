@@ -25,6 +25,13 @@ if (ALQUIMIA_HAVE_CRUNCHFLOW)
   list(APPEND ALQUIMIA_SOURCES crunch_alquimia_interface.F90 crunch_alquimia_wrappers.F90)
 endif()
 
+# PhreeqcRM engine.
+if (ALQUIMIA_HAVE_PHREEQC)
+  list(APPEND ALQUIMIA_TPLS ${TPL_PHREEQC_LIBRARIES})
+  list(APPEND ALQUIMIA_INCLUDE_DIRS ${TPL_PHREEQC_INCLUDE_DIRS})
+  list(APPEND ALQUIMIA_SOURCES phreeqc_alquimia_interface.c)
+endif()
+
 if (ALQUIMIA_NEED_PETSC)
   list(APPEND ALQUIMIA_INCLUDE_DIRS ${PETSC_DIR}/include)
   list(APPEND ALQUIMIA_INCLUDE_DIRS ${PETSC_DIR}/include/petsc)
