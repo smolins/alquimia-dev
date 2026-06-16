@@ -74,8 +74,8 @@ extern "C" {
       AlquimiaProperties* properties,
       AlquimiaState* state,
       AlquimiaAuxiliaryData* aux_data,
-      int natural_id,
       AlquimiaAuxiliaryOutputData* aux_out,
+      int natural_id,      
       AlquimiaEngineStatus* status);
   void crunch_alquimia_getproblemmetadata(
       void* cf_engine_state,

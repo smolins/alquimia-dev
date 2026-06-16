@@ -182,10 +182,12 @@ subroutine Crunch_Alquimia_GetAuxiliaryOutput( &
   type (AlquimiaState), intent(in) :: state
   type (AlquimiaAuxiliaryData), intent(in) :: aux_data
   type (AlquimiaAuxiliaryOutputData), intent(inout) :: aux_output
+  integer (c_int), value, intent(in) :: natural_id
   type (AlquimiaEngineStatus), intent(out) :: status
 
   call GetAuxiliaryOutput(cf_engine_state, &
-       properties, state, aux_data, aux_output, status)
+       properties, state, aux_data, aux_output, natural_id, &
+       status)
 
 end subroutine Crunch_Alquimia_GetAuxiliaryOutput
 

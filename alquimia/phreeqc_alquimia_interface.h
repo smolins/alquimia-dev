@@ -58,7 +58,7 @@ void phreeqc_alquimia_getauxiliaryoutput(void* engine_state,
                                          AlquimiaState* state,
                                          AlquimiaAuxiliaryData* aux_data,
                                          AlquimiaAuxiliaryOutputData* aux_out,
-                                         int natural_id,                                         
+                                         int natural_id,
                                          AlquimiaEngineStatus* status);
 
 void phreeqc_alquimia_getproblemmetadata(void* engine_state,
