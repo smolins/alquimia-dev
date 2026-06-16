@@ -165,6 +165,7 @@ subroutine PFloTran_Alquimia_GetAuxiliaryOutput( &
      state, &
      aux_data, &
      aux_output, &
+     natural_id, &     
      status) bind(C)
 
   use, intrinsic :: iso_c_binding

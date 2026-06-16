@@ -953,8 +953,8 @@ subroutine GetAuxiliaryOutput( &
      properties, &
      state, &
      aux_data, &
-     natural_id, &
      aux_output, &
+     natural_id, &     
      status)
 !  NOTE: Function signature is dictated by the alquimia API.
 
@@ -978,8 +978,8 @@ subroutine GetAuxiliaryOutput( &
   type (AlquimiaProperties), intent(in) :: properties
   type (AlquimiaState), intent(in) :: state
   type (AlquimiaAuxiliaryData), intent(in) :: aux_data
-  integer (c_int), value, intent(in) :: natural_id
   type (AlquimiaAuxiliaryOutputData), intent(inout) :: aux_output
+  integer (c_int), value, intent(in) :: natural_id  
   type (AlquimiaEngineStatus), intent(out) :: status
 
   ! local variables

@@ -570,7 +570,7 @@ int BatchChemDriver_Run(BatchChemDriver* driver)
       printf("BatchChemDriver: step %d (t = %g, dt = %g)\n", driver->step, driver->time, dt);
 
     // Do the chemistry step.
-    natural_id = -999;
+    natural_id = 1;
     driver->chem.ReactionStepOperatorSplit(&driver->chem_engine,
                                            dt, &driver->chem_properties,
                                            &driver->chem_state,
@@ -589,8 +589,8 @@ int BatchChemDriver_Run(BatchChemDriver* driver)
                                     &driver->chem_properties,
                                     &driver->chem_state,
                                     &driver->chem_aux_data,
-                                    natural_id,
                                     &driver->chem_aux_output,
+                                    natural_id,                                    
                                     &driver->chem_status);
     if (driver->chem_status.error != 0)
     {
