@@ -738,6 +738,7 @@ static int Run_OperatorSplit(TransportDriver* driver)
                                       &driver->chem_properties[i],
                                       &driver->chem_state[i],
                                       &driver->chem_aux_data[i],
+                                      natural_id,
                                       &driver->chem_aux_output[i],
                                       &driver->chem_status);
       if (driver->chem_status.error != 0)

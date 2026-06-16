@@ -28,6 +28,8 @@ endif()
 # PhreeqcRM engine.
 if (ALQUIMIA_HAVE_PHREEQC)
   list(APPEND ALQUIMIA_TPLS ${TPL_PHREEQC_LIBRARIES})
+  list(APPEND ALQUIMIA_TPLS stdc++)
+  list(APPEND ALQUIMIA_TPLS gomp)
   list(APPEND ALQUIMIA_INCLUDE_DIRS ${TPL_PHREEQC_INCLUDE_DIRS})
   list(APPEND ALQUIMIA_SOURCES phreeqc_alquimia_interface.c)
 endif()

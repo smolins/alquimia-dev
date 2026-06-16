@@ -103,6 +103,7 @@ extern "C" {
         AlquimiaProperties* props,
         AlquimiaState* state,
         AlquimiaAuxiliaryData* aux_data,
+        int natural_id,
         AlquimiaAuxiliaryOutputData* aux_out,
         AlquimiaEngineStatus* status);
     

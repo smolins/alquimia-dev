@@ -74,6 +74,7 @@ extern "C" {
       AlquimiaProperties* material_properties,
       AlquimiaState* state,
       AlquimiaAuxiliaryData* aux_data,
+      int natural_id,
       AlquimiaAuxiliaryOutputData* aux_out,
       AlquimiaEngineStatus* status);
   void pflotran_alquimia_getproblemmetadata(

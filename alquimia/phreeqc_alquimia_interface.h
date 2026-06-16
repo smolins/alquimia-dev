@@ -9,6 +9,25 @@
 extern "C" {
 #endif
 
+/* 
+ * Structure to hold the internal state of the PhreeqcRM engine instance.
+ * Passed back and forth as void* engine_state in the Alquimia API.
+ */
+typedef struct {
+  int rm_id;  /* The PhreeqcRM instance ID */
+  
+  /* Cached sizes from RM_FindComponents to avoid repeated API calls */
+  int num_primary;
+  int num_aqueous_complexes;
+  int num_minerals;
+  int num_surface_sites;
+  int num_ion_exchange_sites;
+  int num_gases;
+  
+  /* Number of selected output columns */
+  int num_sel_out_cols;
+} PhreeqcRMEngineState;
+
 void phreeqc_alquimia_setup(const char* input_filename,
                             bool hands_off,
                             void* engine_state,
@@ -38,6 +57,7 @@ void phreeqc_alquimia_getauxiliaryoutput(void* engine_state,
                                          AlquimiaProperties* props,
                                          AlquimiaState* state,
                                          AlquimiaAuxiliaryData* aux_data,
+                                         int natural_id,
                                          AlquimiaAuxiliaryOutputData* aux_out,
                                          AlquimiaEngineStatus* status);
 

@@ -589,6 +589,7 @@ int BatchChemDriver_Run(BatchChemDriver* driver)
                                     &driver->chem_properties,
                                     &driver->chem_state,
                                     &driver->chem_aux_data,
+                                    natural_id,
                                     &driver->chem_aux_output,
                                     &driver->chem_status);
     if (driver->chem_status.error != 0)

@@ -953,11 +953,12 @@ subroutine GetAuxiliaryOutput( &
      properties, &
      state, &
      aux_data, &
+     natural_id, &
      aux_output, &
      status)
 !  NOTE: Function signature is dictated by the alquimia API.
 
-  use, intrinsic :: iso_c_binding, only : c_ptr, c_double, c_f_pointer
+  use, intrinsic :: iso_c_binding, only : c_ptr, c_double, c_int, c_f_pointer
 
   use c_f_interface_module, only : f_c_string_ptr
 
@@ -977,6 +978,7 @@ subroutine GetAuxiliaryOutput( &
   type (AlquimiaProperties), intent(in) :: properties
   type (AlquimiaState), intent(in) :: state
   type (AlquimiaAuxiliaryData), intent(in) :: aux_data
+  integer (c_int), value, intent(in) :: natural_id
   type (AlquimiaAuxiliaryOutputData), intent(inout) :: aux_output
   type (AlquimiaEngineStatus), intent(out) :: status
 
