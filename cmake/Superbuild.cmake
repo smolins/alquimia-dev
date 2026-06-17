@@ -1,5 +1,11 @@
 include(ExternalProject)
 
+# Chemistry engines options
+option(XSDK_WITH_PFLOTRAN "Enables support for the PFlotran chemistry engine [ON]." ON)
+option(XSDK_WITH_CRUNCHFLOW "Enables support for the CrunchFlow chemistry engine [ON]." ON)
+option(XSDK_WITH_PHREEQC "Enables support for the PhreeqcRM chemistry engine [ON]." ON)
+option(ALQUIMIA_BUILD_STANDALONE_ENGINES "Build standalone versions of requested chemistry engines [OFF]." OFF)
+
 # Set the install directory for dependencies
 set(INSTALL_DIR "${CMAKE_BINARY_DIR}/install")
 
@@ -19,7 +25,11 @@ if(HDF5_FOUND)
   set(PETSC_HDF5_ARGS "--with-hdf5=1")
 else()
   message(STATUS "HDF5 not found, will be downloaded by PETSc")
-  set(PETSC_HDF5_ARGS "--download-hdf5=1")
+  if(ALQUIMIA_BUILD_STANDALONE_ENGINES)
+    set(PETSC_HDF5_ARGS "--download-hdf5=1" "--with-hdf5-fortran-bindings=1")
+  else()
+    set(PETSC_HDF5_ARGS "--download-hdf5=1")
+  endif()
 endif()
 
 find_package(BLAS QUIET)
@@ -52,11 +62,6 @@ ExternalProject_Add(petsc
 )
 endif()
 
-# Chemistry engines options
-option(XSDK_WITH_PFLOTRAN "Enables support for the PFlotran chemistry engine [ON]." ON)
-option(XSDK_WITH_CRUNCHFLOW "Enables support for the CrunchFlow chemistry engine [ON]." ON)
-option(XSDK_WITH_PHREEQC "Enables support for the PhreeqcRM chemistry engine [ON]." ON)
-option(ALQUIMIA_BUILD_STANDALONE_ENGINES "Build standalone versions of requested chemistry engines [OFF]." OFF)
 
 if (NOT XSDK_WITH_PFLOTRAN AND NOT XSDK_WITH_CRUNCHFLOW AND NOT XSDK_WITH_PHREEQC)
   message(FATAL_ERROR "At least one chemistry engine must be enabled (XSDK_WITH_PFLOTRAN, XSDK_WITH_CRUNCHFLOW, or XSDK_WITH_PHREEQC).")
@@ -124,6 +129,13 @@ if (XSDK_WITH_PFLOTRAN)
           "HDF5_LIB=${HDF5_LDFLAGS_DIR}"
           "HDF5_INCLUDE=${HDF5_INCFLAGS}"
           "LIBS=-L${HDF5_LDFLAGS_DIR} -lhdf5hl_fortran -lhdf5_hl -lhdf5_fortran -lhdf5 -lz")
+    else()
+      # PETSc downloaded and built HDF5, so it lives in our INSTALL_DIR
+      set(PFLOTRAN_STANDALONE_EXTRA_MAKE_ARGS 
+          "have_hdf5=1"
+          "HDF5_LIB=${INSTALL_DIR}/lib"
+          "HDF5_INCLUDE=${INSTALL_DIR}/include"
+          "LIBS=-L${INSTALL_DIR}/lib -lhdf5hl_fortran -lhdf5_hl -lhdf5_fortran -lhdf5 -lz")
     endif()
 
     ExternalProject_Add(pflotran_standalone
@@ -199,6 +211,19 @@ if (XSDK_WITH_PHREEQC)
           -DCMAKE_POSITION_INDEPENDENT_CODE=ON
           -DBUILD_TESTING=OFF
   )
+  if (ALQUIMIA_BUILD_STANDALONE_ENGINES)
+    ExternalProject_Add(phreeqc_standalone
+        GIT_REPOSITORY https://github.com/phreeqc-dev/phreeqc3.git
+        GIT_TAG v3.9.0
+        PREFIX ${CMAKE_BINARY_DIR}/external/phreeqc_standalone
+        CMAKE_ARGS
+            ${COMMON_CMAKE_ARGS}
+            -DBUILD_TESTING=OFF
+        INSTALL_COMMAND ${CMAKE_COMMAND} -E make_directory ${INSTALL_DIR}/bin
+                COMMAND ${CMAKE_COMMAND} -E copy <BINARY_DIR>/phreeqc ${INSTALL_DIR}/bin/phreeqc
+    )
+  endif()
+
   list(APPEND ALQUIMIA_DEPS phreeqcrm)
   list(APPEND ALQUIMIA_EXTRA_ARGS 
        -DXSDK_WITH_PHREEQC=ON
