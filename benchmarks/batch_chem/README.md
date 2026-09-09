@@ -1,6 +1,6 @@
 # Batch Chemistry ONNX Benchmarks
 
-This directory contains batch chemistry input files that exercise the ONNX chemistry engine with LSURF isotherm models and ALSURF neural-network and random-forest models. Each case uses `hands_off = true`, the ONNX engine, the `initial` condition from the referenced model config JSON file, verbose gnuplot output, and these shared state/material settings:
+This directory contains batch chemistry input files that exercise the ONNX chemistry engine with LSURF isotherm models and EX8 neural-network and random-forest models. Each case uses `hands_off = true`, the ONNX engine, the `initial` condition from the referenced model config JSON file, verbose gnuplot output, and these shared state/material settings:
 
 - `timestep = 864000`
 - `density = 997.16`
@@ -14,7 +14,7 @@ Run a case from this directory with the installed batch chemistry driver, for ex
 
 ```bash
 cd [project_root]/benchmarks/batch_chem
-../../build/install/bin/batch_chem alsurf-rf-9-dynamic-batch.cfg
+../../build/install/bin/batch_chem ex8-rf-9-dynamic-batch.cfg
 ```
 
 ## Baseline Input Conditions
@@ -31,22 +31,22 @@ The baseline values below come from the `conditions` block in each referenced mo
 
 The model config maps those named values into specific `AlquimiaState` fields and ONNX tensor elements.
 
-### ALSURF Integrated Neural-Network Baseline
+### EX8 Integrated Neural-Network Baseline
 
 Used by:
 
-- `alsurf-nn-integrated-1d.cfg`
-- `alsurf-nn-integrated-batch1.cfg`
-- `alsurf-nn-integrated-dyn-batch.cfg`
+- `ex8-nn-integrated-1d.cfg`
+- `ex8-nn-integrated-batch1.cfg`
+- `ex8-nn-integrated-dyn-batch.cfg`
 
 | Feature | Baseline value |
 | --- | ---: |
 | `H` | `9.999999999999999e-06` |
 | `Zn` | `1e-07` |
 
-### ALSURF Six-Feature Random-Forest Baseline
+### EX8 Six-Feature Random-Forest Baseline
 
-Used by `alsurf-rf-6.cfg`.
+Used by `ex8-rf-6.cfg`.
 
 | Feature | Baseline value |
 | --- | ---: |
@@ -57,14 +57,14 @@ Used by `alsurf-rf-6.cfg`.
 | `NO3-` | `0.1000000031975435` |
 | `Fe++` | `2.9324029589485202e-12` |
 
-### ALSURF Nine-Feature Random-Forest Baseline
+### EX8 Nine-Feature Random-Forest Baseline
 
 Used by:
 
-- `alsurf-rf-9-batch1.cfg`
-- `alsurf-rf-9-dynamic-batch.cfg`
-- `alsurf-rf-9-feature-vector.cfg`
-- `alsurf-rf-9-scalar.cfg`
+- `ex8-rf-9-batch1.cfg`
+- `ex8-rf-9-dynamic-batch.cfg`
+- `ex8-rf-9-feature-vector.cfg`
+- `ex8-rf-9-scalar.cfg`
 
 | Feature | Baseline value |
 | --- | ---: |
@@ -105,21 +105,21 @@ These values are pre-scaled values expected by the LSURF ONNX models. In the ins
 
 All benchmarks output logs to `*.out`. For internal tensor mappings, refer to the [model documentation](../../models/READMD.md).
 
-### ALSURF Neural-Network Benchmarks
+### EX8 Neural-Network Benchmarks
 | Config | Description | Model | Steps | 
 |---|---|---|---|
-| `alsurf-nn-integrated-1d.cfg` | NN feature-vector inference | `../../models/alsurf_nn/zn_h_regressor_integrated_1D.json` | 100 |
-| `alsurf-nn-integrated-batch1.cfg` | NN fixed-batch inference | `../../models/alsurf_nn/zn_h_regressor_integrated_batch1.json` | 100 |
-| `alsurf-nn-integrated-dyn-batch.cfg`| NN dynamic-batch inference | `../../models/alsurf_nn/zn_h_regressor_integrated_dyn_batch.json` | 1 |
+| `ex8-nn-integrated-1d.cfg` | NN feature-vector inference | `../../models/ex8_nn/zn_h_regressor_integrated_1D.json` | 100 |
+| `ex8-nn-integrated-batch1.cfg` | NN fixed-batch inference | `../../models/ex8_nn/zn_h_regressor_integrated_batch1.json` | 100 |
+| `ex8-nn-integrated-dyn-batch.cfg`| NN dynamic-batch inference | `../../models/ex8_nn/zn_h_regressor_integrated_dyn_batch.json` | 1 |
 
-### ALSURF Random-Forest Benchmarks
+### EX8 Random-Forest Benchmarks
 | Config | Description | Model | Steps |
 |---|---|---|---|
-| `alsurf-rf-6.cfg` | 6-feature RF inference | `../../models/alsurf_rf/alsurf_6.json` | 1 |
-| `alsurf-rf-9-batch1.cfg` | 9-feature RF fixed-batch | `../../models/alsurf_rfalsurf_9_batch1.json` | 1 |
-| `alsurf-rf-9-dynamic-batch.cfg` | 9-feature RF dynamic-batch | `../../models/alsurf_rf/alsurf_9_dynamic_batch.json` | 1 |
-| `alsurf-rf-9-feature-vector.cfg` | 9-feature RF feature-vector | `../../models/alsurf_rf/alsurf_9_feature_vector.json` | 1 |
-| `alsurf-rf-9-scalar.cfg` | 9-feature RF scalar inference | `../../models/alsurf_rf/alsurf_9_scalar.json` | 1 |
+| `ex8-rf-6.cfg` | 6-feature RF inference | `../../models/ex8_rf/ex8_6.json` | 1 |
+| `ex8-rf-9-batch1.cfg` | 9-feature RF fixed-batch | `../../models/ex8_rfex8_9_batch1.json` | 1 |
+| `ex8-rf-9-dynamic-batch.cfg` | 9-feature RF dynamic-batch | `../../models/ex8_rf/ex8_9_dynamic_batch.json` | 1 |
+| `ex8-rf-9-feature-vector.cfg` | 9-feature RF feature-vector | `../../models/ex8_rf/ex8_9_feature_vector.json` | 1 |
+| `ex8-rf-9-scalar.cfg` | 9-feature RF scalar inference | `../../models/ex8_rf/ex8_9_scalar.json` | 1 |
 
 ### LSURF Isotherm Benchmarks
 | Config | Description | Model | Steps |

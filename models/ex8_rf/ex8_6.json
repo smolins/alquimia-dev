@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "model": "alsurf_6.onnx",
+  "model": "ex8_6.onnx",
   "conditions": {
     "initial": {
       "Zn(OH)2(aq)": 1.813505366090861e-15,
