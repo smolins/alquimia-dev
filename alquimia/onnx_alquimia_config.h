@@ -23,10 +23,11 @@ typedef struct {
   int alquimia_state_index;
 } OnnxAlquimiaMapping;
 
-/* One named feature value supplied by a JSON initial condition. */
-/* Item -> key: value */
+/* One condition assignment; nested feature objects are flattened into items. */
 typedef struct {
   char *feature;
+  /* NULL for scalar shorthand, otherwise the explicit state field. */
+  char *alquimia_state;
   double value;
 } OnnxAlquimiaConditionItem;
 

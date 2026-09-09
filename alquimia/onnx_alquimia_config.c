@@ -563,7 +563,7 @@ static bool ParseConditions(
         &onnx_config->conditions[condition_index];
     const cJSON *cjson_item;
     size_t item_index = 0;
-    int item_count;
+    size_t item_count = 0;
 
     condition->name = CopyString(cjson_condition->string);
     if (condition->name == NULL)
@@ -588,18 +588,36 @@ static bool ParseConditions(
       return false;
     }
 
-    // Count the number of items in the "initial"
-    item_count = cJSON_GetArraySize(cjson_condition);
-    if (item_count < 0 ||
-        // Check if the condition features exceed the boundary
-        (size_t)item_count > SIZE_MAX / sizeof(*condition->items))
+    /* Reserve one assignment per explicit field, or per scalar. */
+    cJSON_ArrayForEach(cjson_item, cjson_condition)
     {
-      snprintf(error_message, error_message_size,
-               "Condition '%s' has too many feature values.",
-               condition->name);
-      return false;
+      size_t count = 1;
+      if (cJSON_IsObject(cjson_item))
+      {
+        if (!ValidateUniqueMember(cjson_item, "condition fields",
+                                  error_message, error_message_size))
+        {
+          return false;
+        }
+        count = (size_t)cJSON_GetArraySize(cjson_item);
+        if (count == 0)
+        {
+          snprintf(error_message, error_message_size,
+                   "Feature '%s' in condition '%s' has no fields.",
+                   cjson_item->string, condition->name);
+          return false;
+        }
+      }
+      /* Prevent overflow */
+      if (count > SIZE_MAX / sizeof(*condition->items) - item_count)
+      {
+        SetError(error_message, error_message_size,
+                 "ONNX condition has too many field values.");
+        return false;
+      }
+      item_count += count;
     }
-    condition->num_items = (size_t)item_count;
+    condition->num_items = item_count;
     if (item_count > 0)
     {
       condition->items = (OnnxAlquimiaConditionItem *)calloc(
@@ -614,24 +632,41 @@ static bool ParseConditions(
     // Traverse the members of the condition
     cJSON_ArrayForEach(cjson_item, cjson_condition)
     {
-      if (!cJSON_IsNumber(cjson_item) ||
-          !isfinite(cjson_item->valuedouble))
+      /* nested only for mobile and immobile,
+      ** mineral_volume_fraction and mineral_specific_surface_area
+      ** conditions with one metadata name shared by two features
+      ** eg. "Zn":{
+      **   "total_immobile": 70,
+      **   "total_mobile": 80
+      ** }
+      */
+      bool nested = cJSON_IsObject(cjson_item);
+      const cJSON *value = nested ? cjson_item->child : cjson_item;
+      do
       {
-        snprintf(error_message, error_message_size,
-                 "Feature '%s' in condition '%s' must be a finite number.",
-                 cjson_item->string, condition->name);
-        return false;
-      }
-      condition->items[item_index].feature =
-          CopyString(cjson_item->string);
-      if (condition->items[item_index].feature == NULL)
-      {
-        SetError(error_message, error_message_size,
-                 "Memory allocation failed for an ONNX condition feature.");
-        return false;
-      }
-      condition->items[item_index].value = cjson_item->valuedouble;
-      ++item_index;
+        OnnxAlquimiaConditionItem *item = &condition->items[item_index];
+        if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble))
+        {
+          snprintf(error_message, error_message_size,
+                   "Feature '%s' in condition '%s' must be a finite number.",
+                   cjson_item->string, condition->name);
+          return false;
+        }
+        item->feature = CopyString(cjson_item->string);
+        if (nested)
+        {
+          item->alquimia_state = CopyString(value->string);
+        }
+        if (item->feature == NULL || (nested && item->alquimia_state == NULL))
+        {
+          SetError(error_message, error_message_size,
+                   "Memory allocation failed for an ONNX condition field.");
+          return false;
+        }
+        item->value = value->valuedouble;
+        ++item_index;
+        value = nested ? value->next : NULL;
+      } while (value != NULL);
     }
     ++condition_index;
   }
@@ -836,13 +871,16 @@ void OnnxAlquimiaFreeConfig(OnnxAlquimiaConfig *onnx_config)
     return;
   }
   free(onnx_config->model_path);
-  for (i = 0; i < onnx_config->num_conditions; ++i)
+  for (i = 0; onnx_config->conditions != NULL &&
+              i < onnx_config->num_conditions; ++i)
   {
     size_t j;
     free(onnx_config->conditions[i].name);
-    for (j = 0; j < onnx_config->conditions[i].num_items; ++j)
+    for (j = 0; onnx_config->conditions[i].items != NULL &&
+                j < onnx_config->conditions[i].num_items; ++j)
     {
       free(onnx_config->conditions[i].items[j].feature);
+      free(onnx_config->conditions[i].items[j].alquimia_state);
     }
     free(onnx_config->conditions[i].items);
   }
