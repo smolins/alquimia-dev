@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "model": "zn_h_regressor_integrated_dyn_batch.onnx",
+  "model": "ex8_nn_dynamic_batch.onnx",
   "conditions": {
     "initial": {
       "H": 9.999999999999999e-06,

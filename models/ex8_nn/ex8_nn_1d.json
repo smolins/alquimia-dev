@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "model": "zn_h_regressor_integrated_batch1.onnx",
+  "model": "ex8_nn_1d.onnx",
   "conditions": {
     "initial": {
       "H": 9.999999999999999e-06,
@@ -13,28 +13,28 @@
       "tensor_element_index": 0,
       "feature": "H",
       "alquimia_state": "total_mobile",
-      "alquimia_state_index": 0
+      "alquimia_state_index": 2
     },
     {
       "tensor": "chemical_input_raw",
       "tensor_element_index": 1,
       "feature": "Zn",
       "alquimia_state": "total_mobile",
-      "alquimia_state_index": 1
+      "alquimia_state_index": 3
     }
   ],
   "outputs": [
     {
       "tensor": "sorbed_output_raw",
       "tensor_element_index": 0,
-      "feature": "H",
+      "feature": "H(Reactive)",
       "alquimia_state": "total_immobile",
       "alquimia_state_index": 0
     },
     {
       "tensor": "sorbed_output_raw",
       "tensor_element_index": 1,
-      "feature": "Zn",
+      "feature": "Zn(Reactive)",
       "alquimia_state": "total_immobile",
       "alquimia_state_index": 1
     }

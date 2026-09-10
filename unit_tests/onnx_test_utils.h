@@ -70,15 +70,15 @@
 #define ONNX_TEST_ERROR_MESSAGE_SIZE 512
 #define ONNX_TEST_TEMP_CONFIG "test_alquimia_onnx_config_case.json"
 
-#define ONNX_TEST_ALSURF_MODEL_PATH                                      \
+#define ONNX_TEST_EX8_MODEL_PATH                                      \
   CMAKE_CURRENT_SOURCE_DIR                                               \
-  "/../models/alsurf_nn/zn_h_regressor_integrated_1D.onnx"
-#define ONNX_TEST_ALSURF_NAMED_CONFIG                                    \
+  "/../models/ex8_nn/zn_h_regressor_integrated_1D.onnx"
+#define ONNX_TEST_EX8_NAMED_CONFIG                                    \
   CMAKE_CURRENT_SOURCE_DIR                                               \
   "/onnx_test_cases/deterministic/named_condition.json"
-#define ONNX_TEST_ALSURF_RELATIVE_CONFIG                                 \
+#define ONNX_TEST_EX8_RELATIVE_CONFIG                                 \
   CMAKE_CURRENT_SOURCE_DIR                                               \
-  "/onnx_test_cases/configs/alsurf_relative.json"
+  "/onnx_test_cases/configs/ex8_relative.json"
 
 #define ONNX_TEST_VALID_INPUT_0                                          \
   "{\"tensor\":\"chemical_input_raw\",\"tensor_element_index\":0,"       \
@@ -175,7 +175,7 @@ typedef struct
   const char *config_path;
   double expected_h;
   double expected_zn;
-} OnnxAlsurfModelCase;
+} OnnxEx8ModelCase;
 
 /* ---------- Test Helper Function ---------- */
 
@@ -248,7 +248,7 @@ void OnnxCheckSetupFailureAt(
     const char *file,
     int line);
 
-void OnnxCheckAlsurfPrediction(
+void OnnxCheckEx8Prediction(
     const char *test_id,
     const char *feature,
     double actual,

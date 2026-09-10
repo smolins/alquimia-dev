@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "model": "ex8_9_batch1.onnx",
+  "model": "ex8_rf_9_dynamic_batch.onnx",
   "conditions": {
     "initial": {
       "Zn(OH)2(aq)": 1.813505366090861e-15,

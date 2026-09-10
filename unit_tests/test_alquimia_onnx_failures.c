@@ -331,7 +331,7 @@ static void TestE03RawModelRejected(void)
   }
   ONNX_TEST_EXPECT(
       &num_failures, "E03", "Unable to construct the ONNX model path",
-      OnnxModelPath("alsurf_nn/zn_h_regressor_integrated_1D.onnx", path,
+      OnnxModelPath("ex8_nn/ex8_nn_1d.onnx", path,
                     sizeof(path)), NULL);
   interface.Setup(path, false, &onnx_engine_state, &sizes, &functionality,
                   &status);

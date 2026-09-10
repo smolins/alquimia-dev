@@ -35,9 +35,9 @@ The model config maps those named values into specific `AlquimiaState` fields an
 
 Used by:
 
-- `ex8-nn-integrated-1d.cfg`
-- `ex8-nn-integrated-batch1.cfg`
-- `ex8-nn-integrated-dyn-batch.cfg`
+- `ex8-nn-1d.cfg`
+- `ex8-nn-batch1.cfg`
+- `ex8-nn-dynamic-batch.cfg`
 
 | Feature | Baseline value |
 | --- | ---: |
@@ -63,7 +63,7 @@ Used by:
 
 - `ex8-rf-9-batch1.cfg`
 - `ex8-rf-9-dynamic-batch.cfg`
-- `ex8-rf-9-feature-vector.cfg`
+- `ex8-rf-9-1d.cfg`
 - `ex8-rf-9-scalar.cfg`
 
 | Feature | Baseline value |
@@ -108,18 +108,18 @@ All benchmarks output logs to `*.out`. For internal tensor mappings, refer to th
 ### EX8 Neural-Network Benchmarks
 | Config | Description | Model | Steps | 
 |---|---|---|---|
-| `ex8-nn-integrated-1d.cfg` | NN feature-vector inference | `../../models/ex8_nn/zn_h_regressor_integrated_1D.json` | 100 |
-| `ex8-nn-integrated-batch1.cfg` | NN fixed-batch inference | `../../models/ex8_nn/zn_h_regressor_integrated_batch1.json` | 100 |
-| `ex8-nn-integrated-dyn-batch.cfg`| NN dynamic-batch inference | `../../models/ex8_nn/zn_h_regressor_integrated_dyn_batch.json` | 1 |
+| `ex8-nn-1d.cfg` | NN feature-vector inference | `../../models/ex8_nn/ex8_nn_1d.json` | 100 |
+| `ex8-nn-batch1.cfg` | NN fixed-batch inference | `../../models/ex8_nn/ex8_nn_batch1.json` | 100 |
+| `ex8-nn-dynamic-batch.cfg`| NN dynamic-batch inference | `../../models/ex8_nn/ex8_nn_dynamic_batch.json` | 1 |
 
 ### EX8 Random-Forest Benchmarks
 | Config | Description | Model | Steps |
 |---|---|---|---|
-| `ex8-rf-6.cfg` | 6-feature RF inference | `../../models/ex8_rf/ex8_6.json` | 1 |
-| `ex8-rf-9-batch1.cfg` | 9-feature RF fixed-batch | `../../models/ex8_rfex8_9_batch1.json` | 1 |
-| `ex8-rf-9-dynamic-batch.cfg` | 9-feature RF dynamic-batch | `../../models/ex8_rf/ex8_9_dynamic_batch.json` | 1 |
-| `ex8-rf-9-feature-vector.cfg` | 9-feature RF feature-vector | `../../models/ex8_rf/ex8_9_feature_vector.json` | 1 |
-| `ex8-rf-9-scalar.cfg` | 9-feature RF scalar inference | `../../models/ex8_rf/ex8_9_scalar.json` | 1 |
+| `ex8-rf-6.cfg` | 6-feature RF inference | `../../models/ex8_rf/ex8_rf_6_dynamic_batch.json` | 1 |
+| `ex8-rf-9-batch1.cfg` | 9-feature RF fixed-batch | `../../models/ex8_rfex8_rf_9_batch1.json` | 1 |
+| `ex8-rf-9-dynamic-batch.cfg` | 9-feature RF dynamic-batch | `../../models/ex8_rf/ex8_rf_9_dynamic_batch.json` | 1 |
+| `ex8-rf-9-1d.cfg` | 9-feature RF feature-vector | `../../models/ex8_rf/ex8_rf_9_1d.json` | 1 |
+| `ex8-rf-9-scalar.cfg` | 9-feature RF scalar inference | `../../models/ex8_rf/ex8_rf_9_scalar.json` | 1 |
 
 ### LSURF Isotherm Benchmarks
 | Config | Description | Model | Steps |
