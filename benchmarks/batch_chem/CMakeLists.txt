@@ -38,3 +38,20 @@ if (ALQUIMIA_HAVE_CRUNCHFLOW)
   add_alquimia_batch_chem_benchmark(ch4_o2_crunch_cc ch4-o2-crunch-cc.cfg)
 endif()
 
+if (ALQUIMIA_HAVE_ONNX)
+  add_alquimia_batch_chem_benchmark(ex8_nn_1d ex8-nn-1d.cfg)
+  add_alquimia_batch_chem_benchmark(ex8_nn_batch1 ex8-nn-batch1.cfg)
+  add_alquimia_batch_chem_benchmark(ex8_nn_dynamic_batch ex8-nn-dynamic-batch.cfg)
+  add_alquimia_batch_chem_benchmark(ex8_rf_6_dynamic_batch ex8-rf-6-dynamic-batch.cfg)
+  add_alquimia_batch_chem_benchmark(ex8_rf_9_batch1 ex8-rf-9-batch1.cfg)
+  add_alquimia_batch_chem_benchmark(ex8_rf_9_dynamic_batch ex8-rf-9-dynamic-batch.cfg)
+  add_alquimia_batch_chem_benchmark(ex8_rf_9_1d ex8-rf-9-1d.cfg)
+  add_alquimia_batch_chem_benchmark(ex8_rf_9_scalar ex8-rf-9-scalar.cfg)
+  foreach(features 1 2 5 6)
+    add_alquimia_batch_chem_benchmark(lsurf_${features}_dynamic_batch
+      lsurf-${features}-dynamic-batch.cfg
+      ../../models/lsurf/lsurf_model_${features}_float_64.json
+      ../../models/lsurf/lsurf_model_${features}_float_64.onnx)
+  endforeach()
+
+endif()
