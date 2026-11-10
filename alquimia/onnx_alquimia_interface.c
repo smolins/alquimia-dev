@@ -510,44 +510,53 @@ static bool FindFlatTensorElement(
 }
 
 /**
- * @brief Allows a shared component/mineral name only across distinct fields.
- * @param[in] input_mappings Existing flattened input mappings.
- * @param[in] input_seen Marks the mappings that have already been populated.
- * @param[in] total_flat_inputs Number of entries in the mapping and seen arrays.
- * @param[in] feature Case-sensitive feature name to validate.
+ * @brief Allows a shared feature name only across compatible fields at one index.
+ * @param[in] mappings Existing flattened input or output mappings.
  * @param[in] mapping Candidate state destination.
+ * @param[in] seen Marks the mappings that have already been populated.
+ * @param[in] num_mappings Number of entries in the mapping and seen arrays.
+ * @param[in] feature Case-sensitive feature name to validate.
+ * @param[in] mapping_kind Mapping direction ("input" or "output") for error messages.
+ * @param[in] allow_same_state True when comparing an output against input mappings.
  * @param[out] status Returns an engine-integrity error for a duplicate name.
- * @return True when the name identifies one component or mineral index.
+ * @return True when the feature name does not conflict with existing mappings.
  */
-static bool ValidateUniqueInputFeature(
-    const FeatureMapping *input_mappings,
+static bool ValidateUniqueFeature(
+    const FeatureMapping *mappings,
     const FeatureMapping *mapping,
-    const bool *input_seen,
-    size_t total_flat_inputs,
+    const bool *seen,
+    size_t num_mappings,
     const char *feature,
+    const char *mapping_kind,
+    bool allow_same_state,
     AlquimiaEngineStatus *status)
 {
   size_t i;
 
-  for (i = 0; i < total_flat_inputs; ++i)
+  for (i = 0; i < num_mappings; ++i)
   {
-    if (input_seen[i] && strcmp(input_mappings[i].feature, feature) == 0)
+    if (seen[i] && strcmp(mappings[i].feature, feature) == 0)
     {
       int meta_name = MetadataNameCategory(mapping->alquimia_state);
+      bool same_index =
+          mapping->alquimia_state_index == mappings[i].alquimia_state_index;
+      bool same_state =
+          mapping->alquimia_state == mappings[i].alquimia_state;
 
       /* 0: mobile, immobile, total_molar
       ** 1: mineral_volume_fraction, mineral_specific_surface_area
       */
-      if ((meta_name == 0 || meta_name == 1) &&
-          meta_name == MetadataNameCategory(input_mappings[i].alquimia_state) &&
-          mapping->alquimia_state_index == input_mappings[i].alquimia_state_index &&
-          mapping->alquimia_state != input_mappings[i].alquimia_state)
+      if (same_index &&
+          ((allow_same_state && same_state) ||
+           ((meta_name == 0 || meta_name == 1) &&
+            meta_name == MetadataNameCategory(mappings[i].alquimia_state) &&
+            !same_state)))
       {
         continue;
       }
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength,
-               "Duplicate ONNX input feature name '%s'.", feature);
+               "Duplicate ONNX %s feature name '%s'.", mapping_kind, feature);
       return false;
     }
   }
@@ -813,9 +822,10 @@ static bool BuildConfigMappings(
       return false;
     }
     /* Check the duplicate input feature */
-    if (!ValidateUniqueInputFeature(
+    if (!ValidateUniqueFeature(
             onnx_state->input_mappings, mapping, input_seen,
-            onnx_state->total_flat_inputs, config_input->feature, status))
+            onnx_state->total_flat_inputs, config_input->feature, "input",
+            false, status))
     {
       free(input_seen);
       free(output_seen);
@@ -901,11 +911,25 @@ static bool BuildConfigMappings(
       free(output_seen);
       return false;
     }
-    // Compare between output mapping and input mappings
+    /* Check the duplicate output feature */
+    if (!ValidateUniqueFeature(
+            onnx_state->input_mappings, mapping, input_seen,
+            onnx_state->total_flat_inputs, config_output->feature, "output",
+            true, status) ||
+        !ValidateUniqueFeature(
+            onnx_state->output_mappings, mapping, output_seen,
+            onnx_state->total_flat_outputs, config_output->feature, "output",
+            false, status))
+    {
+      free(input_seen);
+      free(output_seen);
+      return false;
+    }
+    /* Compare between output mapping and input mappings */
     if (!ValidateConsistentFeatureName(
             onnx_state->input_mappings, input_seen,
             onnx_state->total_flat_inputs, mapping, config_output, status) ||
-        // Compare between output mapping and output mappings
+        /* Compare between output mapping and output mappings */
         !ValidateConsistentFeatureName(
             onnx_state->output_mappings, output_seen,
             onnx_state->total_flat_outputs, mapping, config_output, status))
@@ -1100,7 +1124,8 @@ static double GetAlquimiaValue(
     return state->total_immobile.data[mapping.alquimia_state_index];
 
   case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
-      if (state->mineral_volume_fraction.data == NULL || mapping.alquimia_state_index >= state->mineral_volume_fraction.size) {
+    if (state->mineral_volume_fraction.data == NULL || mapping.alquimia_state_index >= state->mineral_volume_fraction.size)
+    {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds mineral_volume_fraction access: index %d, size %d.", mapping.alquimia_state_index, state->mineral_volume_fraction.size);
       return 0.0;
@@ -1108,7 +1133,8 @@ static double GetAlquimiaValue(
     return state->mineral_volume_fraction.data[mapping.alquimia_state_index];
 
   case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
-      if (state->mineral_specific_surface_area.data == NULL || mapping.alquimia_state_index >= state->mineral_specific_surface_area.size) {
+    if (state->mineral_specific_surface_area.data == NULL || mapping.alquimia_state_index >= state->mineral_specific_surface_area.size)
+    {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds mineral_specific_surface_area access: index %d, size %d.", mapping.alquimia_state_index, state->mineral_specific_surface_area.size);
       return 0.0;
@@ -1116,7 +1142,8 @@ static double GetAlquimiaValue(
     return state->mineral_specific_surface_area.data[mapping.alquimia_state_index];
 
   case ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY:
-      if (state->surface_site_density.data == NULL || mapping.alquimia_state_index >= state->surface_site_density.size) {
+    if (state->surface_site_density.data == NULL || mapping.alquimia_state_index >= state->surface_site_density.size)
+    {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds surface_site_density access: index %d, size %d.", mapping.alquimia_state_index, state->surface_site_density.size);
       return 0.0;
@@ -1124,7 +1151,8 @@ static double GetAlquimiaValue(
     return state->surface_site_density.data[mapping.alquimia_state_index];
 
   case ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY:
-      if (state->cation_exchange_capacity.data == NULL || mapping.alquimia_state_index >= state->cation_exchange_capacity.size) {
+    if (state->cation_exchange_capacity.data == NULL || mapping.alquimia_state_index >= state->cation_exchange_capacity.size)
+    {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds cation_exchange_capacity access: index %d, size %d.", mapping.alquimia_state_index, state->cation_exchange_capacity.size);
       return 0.0;
@@ -1144,7 +1172,8 @@ static double GetAlquimiaValue(
     return state->water_density;
 
   case ALQUIMIA_STRUCT_GAS_CONCENTRATION:
-      if (state->gas_concentration.data == NULL || mapping.alquimia_state_index >= state->gas_concentration.size) {
+    if (state->gas_concentration.data == NULL || mapping.alquimia_state_index >= state->gas_concentration.size)
+    {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds gas_concentration access: index %d, size %d.", mapping.alquimia_state_index, state->gas_concentration.size);
       return 0.0;
@@ -1214,7 +1243,8 @@ static void SetAlquimiaValue(
   switch (mapping.alquimia_state)
   {
   case ALQUIMIA_STRUCT_TOTAL_MOBILE:
-      if (state->total_mobile.data == NULL || mapping.alquimia_state_index >= state->total_mobile.size) {
+    if (state->total_mobile.data == NULL || mapping.alquimia_state_index >= state->total_mobile.size)
+    {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds total_mobile write: index %d, size %d.", mapping.alquimia_state_index, state->total_mobile.size);
       return;
@@ -1223,7 +1253,8 @@ static void SetAlquimiaValue(
     break;
 
   case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-      if (state->total_immobile.data == NULL || mapping.alquimia_state_index >= state->total_immobile.size) {
+    if (state->total_immobile.data == NULL || mapping.alquimia_state_index >= state->total_immobile.size)
+    {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds total_immobile write: index %d, size %d.", mapping.alquimia_state_index, state->total_immobile.size);
       return;
@@ -1584,19 +1615,19 @@ static void ReleaseOrtTensors(OrtTensor *tensors, Ort *ort)
   }
 
   /* ONNX Runtime allocates tensor names with the OrtAllocator. */
-  if(ort->allocator != NULL)
+  if (ort->allocator != NULL)
   {
     if (tensors->names != NULL)
-  {
-    for (i = 0; i < tensors->num_tensors; ++i)
     {
-      if (tensors->names[i] != NULL)
+      for (i = 0; i < tensors->num_tensors; ++i)
       {
-        ort->allocator->Free(ort->allocator, tensors->names[i]);
+        if (tensors->names[i] != NULL)
+        {
+          ort->allocator->Free(ort->allocator, tensors->names[i]);
+        }
       }
+      free(tensors->names);
     }
-    free(tensors->names);
-  }
   }
   memset(tensors, 0, sizeof(*tensors));
 }
@@ -1665,7 +1696,7 @@ void onnx_alquimia_setup(
     snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for OnnxEngineState.");
     return;
   }
-  /* Read the JSON file that contains that serves as input 
+  /* Read the JSON file that serves as input
   ** and provides the metadata mapping model to alquimia struct */
   if (!OnnxAlquimiaLoadConfig(
           input_filename, &onnx_state->onnx_config, status->message,
@@ -1708,7 +1739,7 @@ void onnx_alquimia_setup(
     return;
   }
 
-  /* Read the ONNX file that contains that contains the model */ 
+  /* Read the ONNX file that contains the model */
   ort_status = onnx_state->ort.g_ort->CreateEnv(
       ORT_LOGGING_LEVEL_WARNING, "onnx_alquimia_engine",
       &onnx_state->ort.env);
@@ -2691,8 +2722,15 @@ void onnx_alquimia_getauxiliaryoutput(
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
 
-  // Unused data
-  (void)onnx_engine_state;
+  if (onnx_engine_state == NULL || *(OnnxEngineState **)onnx_engine_state == NULL)
+  {
+    status->error = kAlquimiaErrorInvalidEngine;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Invalid ONNX engine state pointer.");
+    return;
+  }
+
+  /* Unused data */
   (void)properties;
   (void)state;
   (void)aux_data;

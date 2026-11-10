@@ -689,7 +689,7 @@ static bool ParseConditions(
  * This helper owns the FILE for its entire lifetime, keeping file cleanup out
  * of the parser's validation control flow.
  */
-static bool ReadConfigjson_contents(
+static bool ReadConfigJsonContents(
     const char *config_path,
     char **json_contents,
     size_t *file_length,
@@ -924,8 +924,8 @@ bool OnnxAlquimiaLoadConfig(
              "ONNX config file path not provided.");
     return false;
   }
-  if (!ReadConfigjson_contents(config_path, &json_contents, &bytes_read,
-                            error_message, error_message_size))
+  if (!ReadConfigJsonContents(config_path, &json_contents, &bytes_read,
+                              error_message, error_message_size))
   {
     return false;
   }

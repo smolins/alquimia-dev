@@ -579,6 +579,17 @@ static void TestE18NullShutdown(void)
   ONNX_TEST_EXPECT(
       &num_failures, "E18", "Invalid shutdown changed the NULL engine state",
       onnx_engine_state == NULL, NULL);
+  interface.GetAuxiliaryOutput(NULL, NULL, NULL, NULL, NULL, &status);
+  ONNX_TEST_EXPECT(
+      &num_failures, "E18",
+      "GetAuxiliaryOutput did not reject a NULL state destination",
+      status.error == kAlquimiaErrorInvalidEngine, &status);
+  interface.GetAuxiliaryOutput(&onnx_engine_state, NULL, NULL, NULL, NULL,
+                               &status);
+  ONNX_TEST_EXPECT(
+      &num_failures, "E18",
+      "GetAuxiliaryOutput did not reject a NULL engine state",
+      status.error == kAlquimiaErrorInvalidEngine, &status);
   FreeAlquimiaEngineStatus(&status);
 }
 

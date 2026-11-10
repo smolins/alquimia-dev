@@ -1033,6 +1033,28 @@ static void TestE02ConfigContractFailures(void)
       "\"outputs\":[" ONNX_TEST_VALID_OUTPUT "]}",
       "Duplicate ONNX input feature name 'duplicate_feature'."), NULL);
 
+  ONNX_TEST_EXPECT(&num_failures, __func__, "OnnxExpectConfigSetupFailure failed",
+      OnnxExpectConfigSetupFailure(&interface, &status,
+      "E17 duplicate output feature name across indices",
+      "{\"schema_version\":1,\"model\":\"" ONNX_TEST_EX8_MODEL_PATH
+      "\",\"inputs\":[" ONNX_TEST_VALID_INPUT_0 "," ONNX_TEST_VALID_INPUT_1
+      "],\"outputs\":[{\"tensor\":\"sorbed_output_raw\",\"tensor_element_index\":0,"
+      "\"feature\":\"duplicate_out\",\"alquimia_state\":\"total_immobile\","
+      "\"alquimia_state_index\":2},{\"tensor\":\"sorbed_output_raw\","
+      "\"tensor_element_index\":1,\"feature\":\"duplicate_out\","
+      "\"alquimia_state\":\"total_immobile\",\"alquimia_state_index\":3}]}",
+      "Duplicate ONNX output feature name 'duplicate_out'."), NULL);
+
+  ONNX_TEST_EXPECT(&num_failures, __func__, "OnnxExpectConfigSetupFailure failed",
+      OnnxExpectConfigSetupFailure(&interface, &status,
+      "E17 output reuses input feature name at different index",
+      "{\"schema_version\":1,\"model\":\"" ONNX_TEST_EX8_MODEL_PATH
+      "\",\"inputs\":[" ONNX_TEST_VALID_INPUT_0 "," ONNX_TEST_VALID_INPUT_1
+      "],\"outputs\":[{\"tensor\":\"sorbed_output_raw\",\"tensor_element_index\":0,"
+      "\"feature\":\"H\",\"alquimia_state\":\"total_immobile\","
+      "\"alquimia_state_index\":2}," ONNX_TEST_VALID_OUTPUT_1 "]}",
+      "Duplicate ONNX output feature name 'H'."), NULL);
+
 cleanup:
   FreeAlquimiaEngineStatus(&status);
 }
