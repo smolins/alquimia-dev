@@ -1336,6 +1336,32 @@ static void SetAlquimiaValue(
 }
 
 /**
+ * @brief Checks whether the model explicitly reads one state element.
+ * @param[in] onnx_state Engine containing the flattened input mappings.
+ * @param[in] alquimia_state State field to find.
+ * @param[in] alquimia_state_index Zero-based state-vector index to find.
+ * @return True when an input tensor element maps to the requested state element.
+ */
+static bool HasMappedInput(
+    const OnnxEngineState *onnx_state,
+    AlquimiaMappedStruct alquimia_state,
+    int alquimia_state_index)
+{
+  size_t i;
+
+  for (i = 0; i < onnx_state->total_flat_inputs; ++i)
+  {
+    const FeatureMapping *mapping = &onnx_state->input_mappings[i];
+    if (mapping->alquimia_state == alquimia_state &&
+        mapping->alquimia_state_index == alquimia_state_index)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * @brief Checks whether the model explicitly outputs one state element.
  * @param[in] onnx_state Engine containing the flattened output mappings.
  * @param[in] alquimia_state State field to find.
@@ -2214,18 +2240,6 @@ void onnx_alquimia_setup(
     onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
   }
 
-  /* functionality is hardwired for now. Mostly fine but need to revisit */
-  /* Each reaction step mutates the reusable tensors and backing buffers in
-  ** OnnxEngineState, so shared-state calls are not thread-safe. MPI-only use
-  ** remains safe because each process owns its engine state. */
-  functionality->thread_safe = false;
-  functionality->temperature_dependent = false;
-  functionality->pressure_dependent = false;
-  functionality->porosity_update = false;
-  functionality->operator_splitting = true;
-  functionality->global_implicit = false;
-  functionality->index_base = 0;
-
   /* Every flattened tensor value must have a complete, valid mapping. */
   for (i = 0; i < onnx_state->input_tensors.num_tensors; ++i)
   {
@@ -2272,7 +2286,21 @@ void onnx_alquimia_setup(
     CleanupOnSetupFailure(&onnx_state);
     return;
   }
- 
+
+  /* Each reaction step mutates the reusable tensors and backing buffers in
+  ** OnnxEngineState, so shared-state calls are not thread-safe. MPI-only use
+  ** remains safe because each process owns its engine state. */
+  functionality->thread_safe = false;
+  functionality->temperature_dependent =
+      HasMappedInput(onnx_state, ALQUIMIA_STRUCT_TEMPERATURE, 0);
+  functionality->pressure_dependent =
+      HasMappedInput(onnx_state, ALQUIMIA_STRUCT_AQUEOUS_PRESSURE, 0);
+  functionality->porosity_update =
+      HasMappedOutput(onnx_state, ALQUIMIA_STRUCT_POROSITY, 0);
+  functionality->operator_splitting = true;
+  functionality->global_implicit = false;
+  functionality->index_base = 0;
+
   *(OnnxEngineState **)onnx_engine_state = onnx_state;
 }
 

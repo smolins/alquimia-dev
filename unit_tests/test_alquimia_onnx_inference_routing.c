@@ -247,6 +247,9 @@ static void TestR06AllStateCategories(void)
   ONNX_TEST_REQUIRE(&num_failures, engine.sizes.num_primary == 1);
   ONNX_TEST_REQUIRE(&num_failures, engine.sizes.num_sorbed == 2);
   ONNX_TEST_REQUIRE(&num_failures, engine.sizes.num_minerals == 2);
+  ONNX_TEST_REQUIRE(&num_failures, engine.functionality.temperature_dependent);
+  ONNX_TEST_REQUIRE(&num_failures, engine.functionality.pressure_dependent);
+  ONNX_TEST_REQUIRE(&num_failures, engine.functionality.porosity_update);
 
   OnnxAllocateState(&engine, &state);
 
@@ -1055,6 +1058,9 @@ static void TestI01Ex8Lifecycle(void)
   ONNX_TEST_REQUIRE(&num_failures, engine.sizes.num_gases == 0);
   ONNX_TEST_REQUIRE(&num_failures, engine.functionality.operator_splitting);
   ONNX_TEST_REQUIRE(&num_failures, !engine.functionality.thread_safe);
+  ONNX_TEST_REQUIRE(&num_failures, !engine.functionality.temperature_dependent);
+  ONNX_TEST_REQUIRE(&num_failures, !engine.functionality.pressure_dependent);
+  ONNX_TEST_REQUIRE(&num_failures, !engine.functionality.porosity_update);
 
   AllocateAlquimiaProblemMetaData(&engine.sizes, &meta_data);
   engine.interface.GetProblemMetaData(
