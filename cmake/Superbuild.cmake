@@ -10,6 +10,8 @@ set(COMMON_CMAKE_ARGS
     -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
     -DCMAKE_Fortran_COMPILER=${CMAKE_Fortran_COMPILER}
     -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -DCMAKE_BUILD_RPATH=${INSTALL_DIR}/lib
 )
 
 # Chemistry engines options
@@ -227,17 +229,38 @@ if (XSDK_WITH_ONNX)
   # Since this uses official pre-compiled assets from Microsoft, the configure
   # and build commands are left empty to bypass compilation overhead.
   # Filesystem encapsulation is strictly enforced at the installation stage.
+  set(ONNX_VERSION "1.27.0")
+  if (APPLE)
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+      set(ONNX_PLATFORM "osx-arm64")
+    else()
+      set(ONNX_PLATFORM "osx-x86_64")
+    endif()
+    set(ONNX_LIB_NAME "libonnxruntime.dylib")
+    set(ONNX_VERSIONED_LIB_NAME "libonnxruntime.${ONNX_VERSION}.dylib")
+    set(ONNX_SOVERSION_LIB_NAME "libonnxruntime.1.dylib")
+  else()
+    if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+      set(ONNX_PLATFORM "linux-aarch64")
+    else()
+      set(ONNX_PLATFORM "linux-x64")
+    endif()
+    set(ONNX_LIB_NAME "libonnxruntime.so")
+    set(ONNX_VERSIONED_LIB_NAME "libonnxruntime.so.${ONNX_VERSION}")
+    set(ONNX_SOVERSION_LIB_NAME "libonnxruntime.so.1")
+  endif()
+
   ExternalProject_Add(onnx
-      URL "https://github.com/microsoft/onnxruntime/releases/download/v1.27.0/onnxruntime-linux-x64-1.27.0.tgz"
+      URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-${ONNX_PLATFORM}-${ONNX_VERSION}.tgz"
       PREFIX ${CMAKE_BINARY_DIR}/external/onnx
       CONFIGURE_COMMAND ""
       BUILD_COMMAND ""
       INSTALL_COMMAND ${CMAKE_COMMAND} -E make_directory ${INSTALL_DIR}/include/onnxruntime
               COMMAND ${CMAKE_COMMAND} -E copy_directory <SOURCE_DIR>/include ${INSTALL_DIR}/include/onnxruntime
               COMMAND ${CMAKE_COMMAND} -E make_directory ${INSTALL_DIR}/lib
-              COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/libonnxruntime.so ${INSTALL_DIR}/lib/libonnxruntime.so
-              COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/libonnxruntime.so.1.27.0 ${INSTALL_DIR}/lib/libonnxruntime.so.1.27.0
-              COMMAND ${CMAKE_COMMAND} -E create_symlink libonnxruntime.so ${INSTALL_DIR}/lib/libonnxruntime.so.1
+              COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/${ONNX_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_LIB_NAME}
+              COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/${ONNX_VERSIONED_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_VERSIONED_LIB_NAME}
+              COMMAND ${CMAKE_COMMAND} -E create_symlink ${ONNX_VERSIONED_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_SOVERSION_LIB_NAME}
   )
 
   # Register 'onnx' as a hard dependency of Alquimia Core.
@@ -249,7 +272,7 @@ if (XSDK_WITH_ONNX)
   # This cleanly exposes ONNX integration flags and targets.
   list(APPEND ALQUIMIA_EXTRA_ARGS
        -DXSDK_WITH_ONNX=ON
-       -DTPL_ONNX_LIBRARIES=${INSTALL_DIR}/lib/libonnxruntime.so
+       -DTPL_ONNX_LIBRARIES=${INSTALL_DIR}/lib/${ONNX_LIB_NAME}
        -DTPL_ONNX_INCLUDE_DIRS=${INSTALL_DIR}/include/onnxruntime
        -DTPL_CJSON_LIBRARIES=${INSTALL_DIR}/lib/libcjson${CMAKE_SHARED_LIBRARY_SUFFIX}
        -DTPL_CJSON_INCLUDE_DIRS=${INSTALL_DIR}/include/cjson)
@@ -284,7 +307,7 @@ ExternalProject_Add(alquimia_core
 # We remove the dependency on alquimia_core so that 'make test' doesn't 
 # trigger a re-check of all dependencies.
 add_custom_target(test
-    COMMAND ${CMAKE_COMMAND} -E env LD_LIBRARY_PATH=${INSTALL_DIR}/lib:$ENV{LD_LIBRARY_PATH} ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/alquimia-build --target test
+    COMMAND ${CMAKE_COMMAND} -E env LD_LIBRARY_PATH=${INSTALL_DIR}/lib:$ENV{LD_LIBRARY_PATH} DYLD_LIBRARY_PATH=${INSTALL_DIR}/lib:$ENV{DYLD_LIBRARY_PATH} ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}/alquimia-build --target test
 )
 
 # Rule to install the contents of the local install directory to the final destination
