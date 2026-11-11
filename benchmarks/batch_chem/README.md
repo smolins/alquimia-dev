@@ -105,7 +105,7 @@ Each LSURF ONNX graph applies `10 ** prediction` to the forest's log10 aqueous u
 
 ## Benchmark Cases
 
-All benchmarks output logs to `*.out`. For internal tensor mappings, refer to the [model documentation](../../models/READMD.md).
+All benchmarks output logs to `*.out`. For internal tensor mappings, refer to the [model documentation](../../models/README.md).
 
 ### EX8 Neural-Network Benchmarks
 | Config | Description | Model | Steps | 
