@@ -90,52 +90,35 @@ static bool ValidateProperties(
     size_t error_message_size)
 {
   const cJSON *cjson_property;
-  size_t i;
 
-  /* Triple loop to check duplicate keys */
-  /* Trade-off between space and time performance */
-  /* Right here, pick the space */
-  /* Uses an O(N^2 * M) triple loop to detect duplicate keys without allocating 
-  ** extra memory, prioritizing space efficiency over time. */
   cJSON_ArrayForEach(cjson_property, cjson_object)
   {
-    /* Check if the key is empty */
-    /* Check if the key is valid */
+    const cJSON *cjson_other;
+
+    /* Check if the key is empty or not in the allowlist. */
     if (cjson_property->string == NULL ||
-        !IsAllowedProperty(cjson_property->string, allowed_schema_fields, num_allowed_schema_fields))
+        !IsAllowedProperty(cjson_property->string, allowed_schema_fields,
+                           num_allowed_schema_fields))
     {
       snprintf(error_message, error_message_size,
                "Unknown property '%s' in %s.",
-               cjson_property->string == NULL ? "" : cjson_property->string, context);
+               cjson_property->string == NULL ? "" : cjson_property->string,
+               context);
       return false;
     }
-    /* Second layer of the loop, traverse the allowed_schema_fields keys */
-    for (i = 0; i < num_allowed_schema_fields; ++i)
+
+    /* Scan subsequent siblings to detect duplicate keys in O(1) space. */
+    for (cjson_other = cjson_property->next;
+         cjson_other != NULL;
+         cjson_other = cjson_other->next)
     {
-      /* If the key was found */
-      if (strcmp(cjson_property->string, allowed_schema_fields[i]) == 0)
+      if (cjson_other->string != NULL &&
+          strcmp(cjson_property->string, cjson_other->string) == 0)
       {
-        /* A new cJSON used to find the duplicate key */
-        const cJSON *cjson_other;
-        /* Record the number of each key */
-        int count = 0;
-        /* Traverse the key from the start to record the number of each key */
-        cJSON_ArrayForEach(cjson_other, cjson_object)
-        {
-          if (cjson_other->string != NULL &&
-              strcmp(cjson_other->string, allowed_schema_fields[i]) == 0)
-          {
-            ++count;
-          }
-        }
-        /* If the count > 1, duplicate key */
-        if (count > 1)
-        {
-          snprintf(error_message, error_message_size,
-                   "Duplicate property '%s' in %s.", allowed_schema_fields[i], context);
-          return false;
-        }
-        break;
+        snprintf(error_message, error_message_size,
+                 "Duplicate property '%s' in %s.",
+                 cjson_property->string, context);
+        return false;
       }
     }
   }
