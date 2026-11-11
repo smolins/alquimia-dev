@@ -140,3 +140,56 @@ jobs:
         run: |
           cd ${{ github.workspace }}/build
           make test
+
+  superbuild-macos-arm64:
+    name: Superbuild macOS arm64 (PFLOTRAN + CrunchFlow + ONNX)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: package-install
+        run: |
+          brew install gcc open-mpi hdf5-mpi python@3.11 pkg-config
+
+      - name: cache-petsc
+        id: cache-petsc
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build/external/petsc
+          key: superbuild-petsc-v3.20.0-macos-14-arm64-debug
+
+      - name: configure
+        run: |
+          mkdir -p ${{ github.workspace }}/build
+          cd ${{ github.workspace }}/build
+          cmake .. \
+            -DALQUIMIA_SUPERBUILD=ON \
+            -DPython3_EXECUTABLE=$(brew --prefix python@3.11)/bin/python3.11 \
+            -DCMAKE_C_COMPILER=$(which mpicc) \
+            -DCMAKE_CXX_COMPILER=$(which mpicxx) \
+            -DCMAKE_Fortran_COMPILER=$(which mpif90) \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DXSDK_WITH_PFLOTRAN=ON \
+            -DXSDK_WITH_CRUNCHFLOW=ON \
+            -DXSDK_WITH_ONNX=ON
+
+      - name: restore-cached-petsc-install
+        if: steps.cache-petsc.outputs.cache-hit == 'true'
+        run: |
+          cd ${{ github.workspace }}/build
+          make -C external/petsc/src/petsc install
+          for step in mkdir download update update_disconnected patch configure build install done; do
+            touch external/petsc/src/petsc-stamp/petsc-${step}
+          done
+          touch CMakeFiles/petsc-complete
+
+      - name: build
+        run: |
+          cd ${{ github.workspace }}/build
+          make -j2
+
+      - name: test
+        run: |
+          cd ${{ github.workspace }}/build
+          make test
