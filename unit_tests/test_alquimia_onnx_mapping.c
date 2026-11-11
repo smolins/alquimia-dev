@@ -233,10 +233,10 @@ static void TestM04PairedInputFields(void)
   const PairedInputCase cases[] = {
       {"M04 mobile + immobile", "Zn",
        "total_mobile", "total_immobile", false, 0.0012},
-      {"M04 total molar + mobile", "Zn",
-       "total_molar", "total_mobile", false, 0.0022},
-      {"M04 total molar + immobile", "Zn",
-       "total_molar", "total_immobile", false, 0.0014},
+      {"M04 total mobile_immobile + mobile", "Zn",
+       "total_mobile_immobile", "total_mobile", false, 0.0022},
+      {"M04 total mobile_immobile + immobile", "Zn",
+       "total_mobile_immobile", "total_immobile", false, 0.0014},
       {"M04 mineral fraction + area", "Calcite",
        "mineral_volume_fraction", "mineral_specific_surface_area", true, 100.05}
   };
@@ -838,7 +838,7 @@ static void TestE02ConfigContractFailures(void)
       "\",\"inputs\":[" ONNX_TEST_VALID_INPUT_0 "," ONNX_TEST_VALID_INPUT_1
       "],\"outputs\":[{\"tensor\":\"sorbed_output_raw\","
       "\"tensor_element_index\":0,\"feature\":\"H\","
-      "\"alquimia_state\":\"total_molar\",\"alquimia_state_index\":0},"
+      "\"alquimia_state\":\"total_mobile_immobile\",\"alquimia_state_index\":0},"
       ONNX_TEST_VALID_OUTPUT_1 "]}", "input-only mapping"), NULL);
 
   /* | E08 | `alquimia_state_index` or `tensor_element_index` is invalid | Setup error | */
@@ -985,7 +985,7 @@ static void TestE02ConfigContractFailures(void)
       "E15 conflicting total and immobile feature names",
       "{\"schema_version\":1,\"model\":\"" ONNX_TEST_EX8_MODEL_PATH
       "\",\"inputs\":[{\"tensor\":\"chemical_input_raw\",\"tensor_element_index\":0,"
-      "\"feature\":\"different_name\",\"alquimia_state\":\"total_molar\","
+      "\"feature\":\"different_name\",\"alquimia_state\":\"total_mobile_immobile\","
       "\"alquimia_state_index\":0}," ONNX_TEST_VALID_INPUT_1 "],"
       "\"outputs\":[" ONNX_TEST_VALID_OUTPUT "]}", "Conflicting ONNX feature names"), NULL);
 
@@ -1091,8 +1091,8 @@ static void TestE18ConditionFieldFailures(void)
         .left_field = "total_mobile",
         .right_field = "total_immobile",
         .right_index = 0,
-        .condition_json = "{\"total_molar\": 1}",
-        .expected_message = "total_molar is derived"
+        .condition_json = "{\"total_mobile_immobile\": 1}",
+        .expected_message = "total_mobile_immobile is derived"
       },
       {
         .name = "E18 mineral field assigned to a component",
@@ -1112,7 +1112,7 @@ static void TestE18ConditionFieldFailures(void)
       },
       {
         .name = "E18 scalar condition for a total input",
-        .left_field = "total_molar",
+        .left_field = "total_mobile_immobile",
         .right_field = "total_mobile",
         .right_index = 0,
         .condition_json = "1",

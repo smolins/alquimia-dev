@@ -86,7 +86,7 @@ typedef enum {
   ALQUIMIA_STRUCT_AQUEOUS_PRESSURE,             /* state->aqueous_pressure */
   ALQUIMIA_STRUCT_TOTAL_MOBILE,                 /* state->total_mobile.data */
   ALQUIMIA_STRUCT_TOTAL_IMMOBILE,               /* state->total_immobile.data */
-  ALQUIMIA_TOTAL_MOLAR,                /* derived total, mol/L water */
+  ALQUIMIA_TOTAL_MOBILE_IMMOBILE,               /* derived total, mol/L water */
   ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION,       /* state->mineral_volume_fraction.data */
   ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA, /* state->mineral_specific_surface_area.data */
   ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY,         /* state->surface_site_density.data */
@@ -198,8 +198,8 @@ static bool ParseStructName(const char *name, AlquimiaMappedStruct *alquimia_sta
     *alquimia_state = ALQUIMIA_STRUCT_TOTAL_MOBILE;
   } else if (strcmp(name, "total_immobile") == 0) {
     *alquimia_state = ALQUIMIA_STRUCT_TOTAL_IMMOBILE;
-  } else if (strcmp(name, "total_molar") == 0) {
-    *alquimia_state = ALQUIMIA_TOTAL_MOLAR;
+  } else if (strcmp(name, "total_mobile_immobile") == 0) {
+    *alquimia_state = ALQUIMIA_TOTAL_MOBILE_IMMOBILE;
   } else if (strcmp(name, "mineral_volume_fraction") == 0) {
     *alquimia_state = ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION;
   } else if (strcmp(name, "mineral_specific_surface_area") == 0) {
@@ -254,7 +254,7 @@ static AlquimiaVectorString *MetadataNamesForMapping(
   {
   case ALQUIMIA_STRUCT_TOTAL_MOBILE:
   case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-  case ALQUIMIA_TOTAL_MOLAR:
+  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
     return &meta_data->primary_names;
   case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
   case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
@@ -285,7 +285,7 @@ static int MetadataNameCategory(AlquimiaMappedStruct alquimia_state)
   {
   case ALQUIMIA_STRUCT_TOTAL_MOBILE:
   case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-  case ALQUIMIA_TOTAL_MOLAR:
+  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
     return 0;
   case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
   case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
@@ -403,7 +403,7 @@ static void UpdateSizesForMapping(
 
   switch (mapping->alquimia_state)
   {
-  case ALQUIMIA_TOTAL_MOLAR:
+  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
     /* Update the size for mobile and immobile at the same time */
     if (sizes->num_primary < required_size)
     {
@@ -543,7 +543,7 @@ static bool ValidateUniqueFeature(
       bool same_state =
           mapping->alquimia_state == mappings[i].alquimia_state;
 
-      /* 0: mobile, immobile, total_molar
+      /* 0: mobile, immobile, total_mobile_immobile
       ** 1: mineral_volume_fraction, mineral_specific_surface_area
       */
       if (same_index &&
@@ -589,18 +589,18 @@ static bool ResolveConditionMapping(
   /* 
    * Reject explicit initialization of a derived total.
    * 
-   * You cannot directly assign a value to 'total_molar' because it is a 
+   * You cannot directly assign a value to 'total_mobile_immobile' because it is a 
    * derived sum, not a fundamental storage slot. If a single total value is provided, 
    * the system cannot arbitrarily guess how to partition that mass between the 
    * fluid phase (total_mobile) and the solid phase (total_immobile).
    * The user must explicitly target the underlying mobile or immobile slots.
    */
   if (item->alquimia_state != NULL &&
-      mapping->alquimia_state == ALQUIMIA_TOTAL_MOLAR)
+      mapping->alquimia_state == ALQUIMIA_TOTAL_MOBILE_IMMOBILE)
   {
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength,
-             "Condition feature '%s': total_molar is derived; "
+             "Condition feature '%s': total_mobile_immobile is derived; "
              "specify total_mobile and/or total_immobile.", item->feature);
     return false;
   }
@@ -621,7 +621,7 @@ static bool ResolveConditionMapping(
      * If the user used this shorthand, we MUST block two highly dangerous scenarios:
      */
     if (item->alquimia_state == NULL &&
-        (matched_input != NULL || input->alquimia_state == ALQUIMIA_TOTAL_MOLAR))
+        (matched_input != NULL || input->alquimia_state == ALQUIMIA_TOTAL_MOBILE_IMMOBILE))
     {
       /* 
        * FAILURE SCENARIO 1: `matched_input != NULL` (Duplicate Name Ambiguity)
@@ -631,8 +631,8 @@ static bool ResolveConditionMapping(
        *                   we find the solid "Zn". Since `matched_input != NULL`, we catch the ambiguity.
        * - Why it fails  : The system refuses to blindly guess which "Zn" gets the 0.001.
        * 
-       * FAILURE SCENARIO 2: `... == ALQUIMIA_TOTAL_MOLAR` (Derived Quantity Ambiguity)
-       * - Model Mapping : Has ONE input named "Zn", defined as TOTAL_MOLAR.
+       * FAILURE SCENARIO 2: `... == ALQUIMIA_TOTAL_MOBILE_IMMOBILE` (Derived Quantity Ambiguity)
+       * - Model Mapping : Has ONE input named "Zn", defined as TOTAL_MOBILE_IMMOBILE.
        * - JSON Condition: "Zn": 0.001
        * - What happens  : The condition matches, but it hits this rule.
        * - Why it fails  : You cannot write directly to a "Total". The system needs to know 
@@ -901,12 +901,12 @@ static bool BuildConfigMappings(
       free(output_seen);
       return false;
     }
-    /* total_molar can only be the input alquimia state schema */
-    if (mapping->alquimia_state == ALQUIMIA_TOTAL_MOLAR)
+    /* total_mobile_immobile can only be the input alquimia state schema */
+    if (mapping->alquimia_state == ALQUIMIA_TOTAL_MOBILE_IMMOBILE)
     {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength,
-               "ONNX total_molar is an input-only mapping.");
+               "ONNX total_mobile_immobile is an input-only mapping.");
       free(input_seen);
       free(output_seen);
       return false;
@@ -1071,7 +1071,7 @@ static double GetAlquimiaValue(
   switch (mapping.alquimia_state)
   {
   /* Support total = mobile + immobile as the input feature */
-  case ALQUIMIA_TOTAL_MOLAR:
+  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
   {
     double mobile;
     double immobile;
@@ -1099,7 +1099,7 @@ static double GetAlquimiaValue(
     {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength,
-               "Non-finite ONNX total_molar at index %d.",
+               "Non-finite ONNX total_mobile_immobile at index %d.",
                mapping.alquimia_state_index);
       return 0.0;
     }
@@ -1430,8 +1430,11 @@ static bool BuildPairedOutputLookup(
     {
       continue;
     }
-    onnx_state->output_has_paired_mapping[i] = HasMappedOutput(
-        onnx_state, paired_state, mapping->alquimia_state_index);
+    onnx_state->output_has_paired_mapping[i] =
+        !HasMappedInput(onnx_state, ALQUIMIA_TOTAL_MOBILE_IMMOBILE,
+                        mapping->alquimia_state_index) ||
+        HasMappedOutput(onnx_state, paired_state,
+                        mapping->alquimia_state_index);
   }
   return true;
 }
@@ -1443,13 +1446,15 @@ static bool BuildPairedOutputLookup(
  * @param[in] old_porosity Porosity before inference.
  * @param[in] new_porosity Final porosity after all mapped outputs.
  * @param[in] mapping Validated model-output destination.
- * @param[in] has_paired_mapping Whether the paired phase is an explicit output.
+ * @param[in] has_paired_mapping Whether conservation of the paired phase is skipped.
  * @param[in] value Model output; mobile and immobile values are mol/L water.
  * @param[out] status Returns mapped-state access errors.
  *
- * When a model outputs only one of total_mobile[i] or total_immobile[i], the
- * paired value conserves bulk inventory: 1000 * porosity * saturation * mobile
- * + immobile. Explicit model outputs for both values remain authoritative.
+ * When a model maps total_mobile_immobile[i] as an input and outputs only one
+ * of total_mobile[i] or total_immobile[i], the paired value conserves bulk
+ * inventory: 1000 * porosity * saturation * mobile + immobile. Explicit model
+ * outputs for both values, or components without total_mobile_immobile[i],
+ * write only the mapped output.
  */
 static void SetAlquimiaModelOutput(
     AlquimiaState *state,

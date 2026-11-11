@@ -11,7 +11,7 @@
 #include <stddef.h>
 
 /* Maps one ONNX tensor element to an AlquimiaState field element.
- * Mobile, immobile, and total_molar tensor values are mol/L liquid water.
+ * Mobile, immobile, and total_mobile_immobile tensor values are mol/L liquid water.
  * Other tensor values use the mapped field's native Alquimia units. */
 typedef struct {
   /* Tensor names the model input or output tensor. */

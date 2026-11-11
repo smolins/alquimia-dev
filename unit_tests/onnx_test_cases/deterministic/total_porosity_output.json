@@ -2,7 +2,7 @@
   "schema_version": 1,
   "model": "single_input_multiple_outputs.onnx",
   "inputs": [
-    {"tensor": "input", "tensor_element_index": 0, "feature": "H", "alquimia_state": "total_molar", "alquimia_state_index": 0},
+    {"tensor": "input", "tensor_element_index": 0, "feature": "H", "alquimia_state": "total_mobile_immobile", "alquimia_state_index": 0},
     {"tensor": "input", "tensor_element_index": 1, "feature": "temperature", "alquimia_state": "temperature", "alquimia_state_index": 0}
   ],
   "outputs": [

@@ -22,9 +22,9 @@ Output features: **H (immobile)**, **Zn (immobile)**
 
 | Config | Model | Mapping |
 |---|---|---|
-| `ex8_nn_1d.json` | `ex8_nn_1d.onnx` | Reads H/Zn from `total_molar[0]` and `[1]`; writes reactive H/Zn to `total_immobile[0]` and `[1]`. |
-| `ex8_nn_batch1.json` | `ex8_nn_batch1.onnx` | Batch = 1 version of the H/Zn total-molar to total-immobile mapping. |
-| `ex8_nn_dynamic_batch.json` | `ex8_nn_dynamic_batch.onnx` | Dynamic-batch version of the H/Zn total-molar to total-immobile mapping. |
+| `ex8_nn_1d.json` | `ex8_nn_1d.onnx` | Reads H/Zn from `total_mobile_immobile[0]` and `[1]`; writes reactive H/Zn to `total_immobile[0]` and `[1]`. |
+| `ex8_nn_batch1.json` | `ex8_nn_batch1.onnx` | Batch = 1 version of the H/Zn total-mobile-immobile to total-immobile mapping. |
+| `ex8_nn_dynamic_batch.json` | `ex8_nn_dynamic_batch.onnx` | Dynamic-batch version of the H/Zn total-mobile-immobile to total-immobile mapping. |
 
 Each config includes an `initial` condition with H = `9.999999999999999e-06` and Zn = `1e-7`.
 The inference results should be H(immobile) = `-1.230666e-04`, Zn(immobile) = `-1.479950e-07`.

@@ -42,7 +42,7 @@ ONNX test IDs are file-local. For example, `E01` in the mapping test is a differ
 | `E04` | Missing input mapping properties are rejected. |
 | `E05` | Missing output mapping properties are rejected. |
 | `E06` | Unknown or duplicate JSON properties are rejected. |
-| `E07` | Unsupported `alquimia_state` names and output mappings to input-only `total_molar` are rejected. |
+| `E07` | Unsupported `alquimia_state` names and output mappings to input-only `total_mobile_immobile` are rejected. |
 | `E08` | Invalid mapping indices are rejected, including negative, fractional, and out-of-range integer values. |
 | `E09` | Scalar state mappings reject nonzero `alquimia_state_index`. |
 | `E10` | Unknown ONNX tensor names are rejected. |

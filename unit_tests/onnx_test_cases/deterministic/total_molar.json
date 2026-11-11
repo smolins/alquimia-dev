@@ -2,8 +2,8 @@
   "schema_version": 1,
   "model": "add_two_inputs.onnx",
   "inputs": [
-    {"tensor": "left", "tensor_element_index": 0, "feature": "H", "alquimia_state": "total_molar", "alquimia_state_index": 0},
-    {"tensor": "right", "tensor_element_index": 0, "feature": "Zn", "alquimia_state": "total_molar", "alquimia_state_index": 2}
+    {"tensor": "left", "tensor_element_index": 0, "feature": "H", "alquimia_state": "total_mobile_immobile", "alquimia_state_index": 0},
+    {"tensor": "right", "tensor_element_index": 0, "feature": "Zn", "alquimia_state": "total_mobile_immobile", "alquimia_state_index": 2}
   ],
   "outputs": [
     {"tensor": "sum", "tensor_element_index": 0, "feature": "H", "alquimia_state": "total_immobile", "alquimia_state_index": 0}

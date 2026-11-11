@@ -16,14 +16,14 @@
       "tensor": "chemical_input_raw",
       "tensor_element_index": 0,
       "feature": "H",
-      "alquimia_state": "total_molar",
+      "alquimia_state": "total_mobile_immobile",
       "alquimia_state_index": 0
     },
     {
       "tensor": "chemical_input_raw",
       "tensor_element_index": 1,
       "feature": "Zn",
-      "alquimia_state": "total_molar",
+      "alquimia_state": "total_mobile_immobile",
       "alquimia_state_index": 1
     }
   ],

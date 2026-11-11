@@ -151,6 +151,8 @@ static void TestR03SingleInputMultipleOutputs(void)
 
   ONNX_TEST_REQUIRE(&num_failures, OnnxRunInference(&engine, &state));
 
+  ONNX_TEST_REQUIRE(&num_failures, OnnxCloseEnough(state.total_mobile.data[0], 3.0, 1.0e-12));
+  ONNX_TEST_REQUIRE(&num_failures, OnnxCloseEnough(state.total_mobile.data[1], -5.0, 1.0e-12));
   ONNX_TEST_REQUIRE(&num_failures, OnnxCloseEnough(state.total_mobile.data[2], 3.0, 1.0e-12));
   ONNX_TEST_REQUIRE(&num_failures, OnnxCloseEnough(state.total_mobile.data[3], -5.0, 1.0e-12));
   ONNX_TEST_REQUIRE(&num_failures, OnnxCloseEnough(state.total_immobile.data[0], 13000, 1.0e-12));
@@ -364,12 +366,12 @@ static void TestR08MobileImmobileConservation(void)
       &engine.engine_state, 1.0, &properties, &state, NULL, 0, &engine.status);
   ONNX_TEST_REQUIRE(&num_failures, engine.status.error == kAlquimiaNoError);
 
-  /* shifted[0] changes mobile component 0 from 3 to 13. Its paired
-  ** immobile inventory decreases by 1000 to preserve 317 mol/m^3 bulk. */
+  /* shifted[0] changes mobile component 0 from total input 3.17 to 13.17.
+  ** Its paired immobile inventory decreases to -1000 to preserve 317 mol/m^3 bulk. */
   ONNX_TEST_REQUIRE(&num_failures,
-      OnnxCloseEnough(state.total_mobile.data[0], 13.0, 1.0e-12));
+      OnnxCloseEnough(state.total_mobile.data[0], 13.17, 1.0e-12));
   ONNX_TEST_REQUIRE(&num_failures,
-      OnnxCloseEnough(state.total_immobile.data[0], -983.0, 1.0e-12));
+      OnnxCloseEnough(state.total_immobile.data[0], -1000.0, 1.0e-12));
   /* copy[1] and shifted[1] explicitly output both phases of component 1,
   ** so both model values remain authoritative without conservation.
   ** The immobile prediction is 24 mol/L water, or 2400 mol/m^3 bulk. */
