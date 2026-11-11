@@ -21,12 +21,14 @@ option(XSDK_WITH_ONNX "Enables support for the ONNX Runtime chemistry engine [ON
 option(ALQUIMIA_BUILD_STANDALONE_ENGINES "Build standalone versions of requested chemistry engines [OFF]." OFF)
 
 if (NOT XSDK_WITH_PFLOTRAN AND NOT XSDK_WITH_CRUNCHFLOW AND NOT XSDK_WITH_ONNX)
-  message(FATAL_ERROR "At least one chemistry engine must be enabled (XSDK_WITH_PFLOTRAN or XSDK_WITH_CRUNCHFLOW).")
+  message(FATAL_ERROR "At least one chemistry engine must be enabled (XSDK_WITH_PFLOTRAN, XSDK_WITH_CRUNCHFLOW, or XSDK_WITH_ONNX).")
 endif()
 
 # Only search for and compile HDF5, BLAS, LAPACK, and PETSc if traditional physical
 # engines are enabled. For pure machine learning/ONNX configurations, these are bypassed.
 if (XSDK_WITH_PFLOTRAN OR XSDK_WITH_CRUNCHFLOW)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
   # Detect system dependencies to avoid unnecessary downloads
   find_package(HDF5 QUIET)
   if(HDF5_FOUND)
@@ -39,6 +41,8 @@ if (XSDK_WITH_PFLOTRAN OR XSDK_WITH_CRUNCHFLOW)
 
   find_package(BLAS QUIET)
   find_package(LAPACK QUIET)
+  # TODO: System BLAS/LAPACK detection is temporarily disabled (AND FALSE) to
+  # force PETSc to build fblaslapack and avoid linking issues with standalone engines.
   if(BLAS_FOUND AND LAPACK_FOUND AND FALSE)
     message(STATUS "Found system BLAS/LAPACK")
     set(PETSC_BLASLAPACK_ARGS "")
@@ -60,7 +64,7 @@ if (XSDK_WITH_PFLOTRAN OR XSDK_WITH_CRUNCHFLOW)
       PREFIX ${CMAKE_BINARY_DIR}/external/petsc
       BUILD_IN_SOURCE 1
       UPDATE_DISCONNECTED 1
-      CONFIGURE_COMMAND /usr/bin/python3.10 ./configure --prefix=${INSTALL_DIR} --with-mpi=1 ${PETSC_DEBUG_ARG} --with-shared-libraries=1 ${PETSC_HDF5_ARGS} ${PETSC_BLASLAPACK_ARGS}
+      CONFIGURE_COMMAND ${Python3_EXECUTABLE} ./configure --prefix=${INSTALL_DIR} --with-mpi=1 ${PETSC_DEBUG_ARG} --with-shared-libraries=1 ${PETSC_HDF5_ARGS} ${PETSC_BLASLAPACK_ARGS}
       BUILD_COMMAND make
       INSTALL_COMMAND make install
   )
