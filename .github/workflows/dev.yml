@@ -3,69 +3,140 @@ name: Alquimia CI
 on: [workflow_dispatch, push, pull_request]
 
 env:
-  # Customizing build type
   BUILD_TYPE: DEBUG
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  manual-build:
+    name: Manual Build (PFLOTRAN + CrunchFlow)
+    runs-on: ubuntu-22.04
 
     steps:
+      - uses: actions/checkout@v4
 
-    - name: package-install
-      run: |
-        sudo apt-get -qq update
-        sudo apt -qq install gfortran libopenmpi-dev libhdf5-openmpi-dev hdf5-helpers
+      - name: package-install
+        run: |
+          sudo apt-get -qq update
+          sudo apt -qq install gfortran libopenmpi-dev openmpi-bin libhdf5-openmpi-dev hdf5-helpers
 
-    - name: directories-variables
-      run: |
-        echo "PETSC_DIR=$HOME/petsc" >> $GITHUB_ENV
-        echo "PETSC_ARCH=debug" >> $GITHUB_ENV	
-        echo "PFLOTRAN_DIR=$HOME/pflotran" >> $GITHUB_ENV
-        echo "CRUNCH_DIR=$HOME/crunchtope-dev" >> $GITHUB_ENV
-        echo "ALQUIMIA_DIR=$HOME/work/install" >> $GITHUB_ENV
-        echo "ALQUIMIA_REPO_DIR=$HOME/work/alquimia-dev/alquimia-dev" >> $GITHUB_ENV
+      - name: directories-variables
+        run: |
+          echo "PETSC_DIR=$HOME/petsc" >> $GITHUB_ENV
+          echo "PETSC_ARCH=debug" >> $GITHUB_ENV
+          echo "PFLOTRAN_DIR=$HOME/pflotran" >> $GITHUB_ENV
+          echo "CRUNCH_DIR=$HOME/crunchtope-dev" >> $GITHUB_ENV
+          echo "ALQUIMIA_DIR=$HOME/work/install" >> $GITHUB_ENV
 
-    - name: petsc-install
-      run: |
-        git clone https://gitlab.com/petsc/petsc.git --branch v3.20.0 $PETSC_DIR
-        cd $PETSC_DIR
-        echo "Alquimia >> Configuring petsc"
-        PETSC_ARCH=$PETSC_ARCH ./configure --with-mpi=1 --with-debugging=1 --with-shared-libraries=1 --download-fblaslapack=1 --with-hdf5-dir=/usr/lib/x86_64-linux-gnu/hdf5/openmpi
-        echo "Alquimia >> Building petsc"
-        make
-        
-    - name: pflotran-install
-      run: |
-        git clone https://bitbucket.org/pflotran/pflotran --branch v5.0.0 $PFLOTRAN_DIR
-        cd $PFLOTRAN_DIR/src/pflotran
-        echo "Building libpflotranchem.a"	
-        make libpflotranchem.a
+      - name: cache-petsc
+        id: cache-petsc
+        uses: actions/cache@v4
+        with:
+          path: ~/petsc
+          key: manual-petsc-v3.20.0-ubuntu-22.04-debug
 
-    - name: crunchflow-install
-      run: |
-        git clone https://bitbucket.org/crunchflow/crunchtope-dev $CRUNCH_DIR
-        cd $CRUNCH_DIR/source
-        git apply MakefileForAlquimia.patch
-        echo "Building libcrunchchem.a"
-        make libcrunchchem.a
+      - name: petsc-install
+        if: steps.cache-petsc.outputs.cache-hit != 'true'
+        run: |
+          git clone https://gitlab.com/petsc/petsc.git --branch v3.20.0 $PETSC_DIR
+          cd $PETSC_DIR
+          echo "Alquimia >> Configuring petsc"
+          PETSC_ARCH=$PETSC_ARCH ./configure --with-mpi=1 --with-debugging=1 --with-shared-libraries=1 --download-fblaslapack=1 --with-hdf5-dir=/usr/lib/x86_64-linux-gnu/hdf5/openmpi
+          echo "Alquimia >> Building petsc"
+          make -j2
 
-    - uses: actions/checkout@v2
+      - name: pflotran-install
+        run: |
+          git clone https://bitbucket.org/pflotran/pflotran --branch v5.0.0 $PFLOTRAN_DIR
+          cd $PFLOTRAN_DIR/src/pflotran
+          echo "Building libpflotranchem.a"
+          make -j2 libpflotranchem.a
 
-    - name: configure
-      run: |
-        ls $HOME/work
-        #ls $HOME/runners
-        mkdir $ALQUIMIA_REPO_DIR/build
-        cd $ALQUIMIA_REPO_DIR/build
-        cmake ..  -DCMAKE_INSTALL_PREFIX=$ALQUIMIA_DIR   -DCMAKE_C_COMPILER=`which mpicc`   -DCMAKE_CXX_COMPILER=`which mpicxx`   -DCMAKE_Fortran_COMPILER=`which mpif90`   -DCMAKE_BUILD_TYPE=Release   -DXSDK_WITH_PFLOTRAN=ON  -DTPL_PFLOTRAN_LIBRARIES=$PFLOTRAN_DIR/src/pflotran/libpflotranchem.a   -DTPL_PFLOTRAN_INCLUDE_DIRS=$PFLOTRAN_DIR/src/pflotran  -DXSDK_WITH_CRUNCHFLOW=ON   -DTPL_CRUNCHFLOW_LIBRARIES=$CRUNCH_DIR/source/libcrunchchem.a   -DTPL_CRUNCHFLOW_INCLUDE_DIRS=$CRUNCH_DIR/source   -DCMAKE_BUILD_TYPE=DEBUG   -DCMAKE_C_FLAGS="-W -Wall -Wextra"   -DCMAKE_CXX_FLAGS="-W -Wall -Wextra"   -DCMAKE_Fortran_FLAGS="-W -Wall -Wextra"
+      - name: crunchflow-install
+        run: |
+          git clone https://bitbucket.org/crunchflow/crunchtope-dev $CRUNCH_DIR
+          cd $CRUNCH_DIR/source
+          git apply MakefileForAlquimia.patch
+          echo "Building libcrunchchem.a"
+          make -j2 libcrunchchem.a
 
-    - name: build
-      run: |
-        cd $ALQUIMIA_REPO_DIR/build
-        make -j2
+      - name: configure
+        run: |
+          mkdir -p ${{ github.workspace }}/build
+          cd ${{ github.workspace }}/build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$ALQUIMIA_DIR \
+            -DCMAKE_C_COMPILER=$(which mpicc) \
+            -DCMAKE_CXX_COMPILER=$(which mpicxx) \
+            -DCMAKE_Fortran_COMPILER=$(which mpif90) \
+            -DCMAKE_BUILD_TYPE=DEBUG \
+            -DXSDK_WITH_PFLOTRAN=ON \
+            -DTPL_PFLOTRAN_LIBRARIES=$PFLOTRAN_DIR/src/pflotran/libpflotranchem.a \
+            -DTPL_PFLOTRAN_INCLUDE_DIRS=$PFLOTRAN_DIR/src/pflotran \
+            -DXSDK_WITH_CRUNCHFLOW=ON \
+            -DTPL_CRUNCHFLOW_LIBRARIES=$CRUNCH_DIR/source/libcrunchchem.a \
+            -DTPL_CRUNCHFLOW_INCLUDE_DIRS=$CRUNCH_DIR/source \
+            -DCMAKE_C_FLAGS="-W -Wall -Wextra" \
+            -DCMAKE_CXX_FLAGS="-W -Wall -Wextra" \
+            -DCMAKE_Fortran_FLAGS="-W -Wall -Wextra"
 
-    - name: test
-      run: |
-        cd $ALQUIMIA_REPO_DIR/build
-        make test
+      - name: build
+        run: |
+          cd ${{ github.workspace }}/build
+          make -j2
+
+      - name: test
+        run: |
+          cd ${{ github.workspace }}/build
+          ctest --output-on-failure
+
+  superbuild:
+    name: Superbuild (PFLOTRAN + CrunchFlow + ONNX)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: package-install
+        run: |
+          sudo apt-get -qq update
+          sudo apt -qq install gfortran libopenmpi-dev openmpi-bin libhdf5-openmpi-dev hdf5-helpers pkg-config
+
+      - name: cache-petsc
+        id: cache-petsc
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build/external/petsc
+          key: superbuild-petsc-v3.20.0-ubuntu-22.04-debug
+
+      - name: configure
+        run: |
+          mkdir -p ${{ github.workspace }}/build
+          cd ${{ github.workspace }}/build
+          cmake .. \
+            -DALQUIMIA_SUPERBUILD=ON \
+            -DCMAKE_C_COMPILER=$(which mpicc) \
+            -DCMAKE_CXX_COMPILER=$(which mpicxx) \
+            -DCMAKE_Fortran_COMPILER=$(which mpif90) \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DXSDK_WITH_PFLOTRAN=ON \
+            -DXSDK_WITH_CRUNCHFLOW=ON \
+            -DXSDK_WITH_ONNX=ON
+
+      - name: restore-cached-petsc-install
+        if: steps.cache-petsc.outputs.cache-hit == 'true'
+        run: |
+          cd ${{ github.workspace }}/build
+          make -C external/petsc/src/petsc install
+          for step in mkdir download update update_disconnected patch configure build install done; do
+            touch external/petsc/src/petsc-stamp/petsc-${step}
+          done
+          touch CMakeFiles/petsc-complete
+
+      - name: build
+        run: |
+          cd ${{ github.workspace }}/build
+          make -j2
+
+      - name: test
+        run: |
+          cd ${{ github.workspace }}/build
+          make test
