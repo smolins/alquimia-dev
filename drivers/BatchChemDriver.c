@@ -54,13 +54,18 @@ static bool ValueIsTrue(const char* value)
 
 static void GetIndexLabel(const char* name, char* label)
 {
-  size_t br1 = strstr(name, "[") - name;
-  size_t br2 = strstr(name, "]") - name;
-  // For isotherm_kd[Na+]
-  // label = [Na+
-  // Copy extra '['
-  size_t len = br2 - br1 - 1;
-  memcpy(label, &name[br1 + 1], sizeof(char) * len);
+  const char* open = strchr(name, '[');
+  const char* close = (open != NULL) ? strchr(open + 1, ']') : NULL;
+  if (open == NULL || close == NULL)
+  {
+    label[0] = '\0';
+    return;
+  }
+  // Extract the bracketed label (e.g., "Na+" from "isotherm_kd[Na+]").
+  size_t len = (size_t)(close - open - 1);
+  if (len >= 128)
+    len = 127;
+  memcpy(label, open + 1, sizeof(char) * len);
   label[len] = '\0';
 }
 
@@ -423,9 +428,6 @@ BatchChemDriver* BatchChemDriver_New(BatchChemDriverInput* input)
   {
     for (int i = 0; i < driver->chem_state.cation_exchange_capacity.size; ++i)
     {
-      // It uses the feature names to map the data 
-      // In input file, the name is [uranium_total
-      // In order to match the 
       int j = IonExchangeIndex(input, driver->chem_metadata.ion_exchange_names.data[i]);
       driver->chem_state.cation_exchange_capacity.data[i] = input->cation_exchange_capacity[j];
     }

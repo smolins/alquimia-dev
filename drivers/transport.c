@@ -100,7 +100,7 @@ int main(int argc, char* argv[])
   if (status == EXIT_SUCCESS)
     printf("Success!\n");
   else
-    printf("Failure!\n");
+    printf("Failed!\n");
 #endif
 
   return status;
