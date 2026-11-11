@@ -72,7 +72,7 @@
 
 #define ONNX_TEST_EX8_MODEL_PATH                                      \
   CMAKE_CURRENT_SOURCE_DIR                                               \
-  "/../models/ex8_nn/ex8_nn_1d.onnx"
+  "/../benchmarks/batch_chem/onnx/ex8_nn_1d.onnx"
 #define ONNX_TEST_EX8_NAMED_CONFIG                                    \
   CMAKE_CURRENT_SOURCE_DIR                                               \
   "/onnx_test_cases/deterministic/named_condition.json"

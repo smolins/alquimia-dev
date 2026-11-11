@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "model": "../../../models/ex8_nn/ex8_nn_1d.onnx",
+  "model": "../../../benchmarks/batch_chem/onnx/ex8_nn_1d.onnx",
   "conditions": {
     "initial": {
       "H": 9.999999999999999e-06,

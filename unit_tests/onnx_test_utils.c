@@ -207,7 +207,8 @@ bool OnnxTestCasePath(const char *relative_path, char *path, size_t size)
  */
 bool OnnxModelPath(const char *relative_path, char *path, size_t size)
 {
-  return OnnxPathInFolder("../models", relative_path, path, size);
+  return OnnxPathInFolder("../benchmarks/batch_chem/onnx", relative_path, path,
+                          size);
 }
 
 /**

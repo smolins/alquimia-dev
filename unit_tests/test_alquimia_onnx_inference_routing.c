@@ -973,20 +973,20 @@ static void TestF06Ex8Models(void)
   static const double rf_h = 1.271885656770001e-4 * 1000;
   static const double rf_zn = 3.9111416932674e-10 * 1000;
   static const OnnxEx8ModelCase cases[] = {
-      {"F06-NN-1D", "ex8_nn/ex8_nn_1d.json",
+      {"F06-NN-1D", "ex8_nn_1d.json",
        nn_h, nn_zn},
       {"F06-NN-batch1",
-       "ex8_nn/ex8_nn_batch1.json", nn_h, nn_zn},
+       "ex8_nn_batch1.json", nn_h, nn_zn},
       {"F06-NN-dynamic",
-       "ex8_nn/ex8_nn_dynamic_batch.json", nn_h, nn_zn},
-      {"F06-RF-batch1", "ex8_rf/ex8_rf_9_batch1.json", rf_h, rf_zn},
-      {"F06-RF-dynamic", "ex8_rf/ex8_rf_9_dynamic_batch.json", rf_h,
+       "ex8_nn_dynamic_batch.json", nn_h, nn_zn},
+      {"F06-RF-batch1", "ex8_rf_9_batch1.json", rf_h, rf_zn},
+      {"F06-RF-dynamic", "ex8_rf_9_dynamic_batch.json", rf_h,
        rf_zn},
-      {"F06-RF-vector", "ex8_rf/ex8_rf_9_1d.json", rf_h,
+      {"F06-RF-vector", "ex8_rf_9_1d.json", rf_h,
        rf_zn},
-      {"F06-RF-6", "ex8_rf/ex8_rf_6_dynamic_batch.json", rf_h, rf_zn},
-      {"F06-RF-scalar", "ex8_rf/ex8_rf_9_scalar.json", rf_h, rf_zn},
-      {"F06-RF-mixed-input-ranks", "ex8_rf/ex8_rf_9_mixed_inputs.json",
+      {"F06-RF-6", "ex8_rf_6_dynamic_batch.json", rf_h, rf_zn},
+      {"F06-RF-scalar", "ex8_rf_9_scalar.json", rf_h, rf_zn},
+      {"F06-RF-mixed-input-ranks", "ex8_rf_9_mixed_inputs.json",
        rf_h, rf_zn},
   };
   size_t i;
