@@ -162,7 +162,7 @@ if (XSDK_WITH_CRUNCHFLOW)
       CONFIGURE_COMMAND ""
       UPDATE_DISCONNECTED 1
       PATCH_COMMAND git apply --check source/MakefileForAlquimia.patch && git apply source/MakefileForAlquimia.patch || echo "Patch already applied or failed"
-      BUILD_COMMAND make -C source libcrunchchem.a PETSC_DIR=${INSTALL_DIR} PETSC_ARCH=""
+      BUILD_COMMAND make -j1 -C source libcrunchchem.a PETSC_DIR=${INSTALL_DIR} PETSC_ARCH=""
       BUILD_IN_SOURCE 1
       INSTALL_COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/source/libcrunchchem.a ${INSTALL_DIR}/lib/libcrunchchem.a
               COMMAND ${CMAKE_COMMAND} -E make_directory ${INSTALL_DIR}/include/crunchflow
@@ -183,7 +183,7 @@ if (XSDK_WITH_CRUNCHFLOW)
         CONFIGURE_COMMAND ""
         UPDATE_DISCONNECTED 1
         PATCH_COMMAND sed -i "s/chkopts//g" source/Makefile
-        BUILD_COMMAND make -C source CrunchMain PETSC_DIR=${INSTALL_DIR} PETSC_ARCH=""
+        BUILD_COMMAND make -j1 -C source CrunchMain PETSC_DIR=${INSTALL_DIR} PETSC_ARCH=""
         BUILD_IN_SOURCE 1
         INSTALL_COMMAND ${CMAKE_COMMAND} -E make_directory ${INSTALL_DIR}/bin
                 COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/source/CrunchTope ${INSTALL_DIR}/bin/crunchflow

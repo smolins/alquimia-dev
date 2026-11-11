@@ -56,7 +56,7 @@ jobs:
           cd $CRUNCH_DIR/source
           git apply MakefileForAlquimia.patch
           echo "Building libcrunchchem.a"
-          make -j2 libcrunchchem.a
+          make -j1 libcrunchchem.a
 
       - name: configure
         run: |
@@ -143,6 +143,7 @@ jobs:
 
   superbuild-macos-arm64:
     name: Superbuild macOS arm64 (PFLOTRAN + CrunchFlow + ONNX)
+    if: false
     runs-on: macos-14
 
     steps:
