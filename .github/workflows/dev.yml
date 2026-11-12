@@ -126,7 +126,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/build
           make -C external/petsc/src/petsc install
-          for step in mkdir download update update_disconnected patch configure build install done; do
+          for step in mkdir download update update_disconnected patch patch_disconnected configure build install done; do
             touch external/petsc/src/petsc-stamp/petsc-${step}
           done
           touch CMakeFiles/petsc-complete
@@ -180,7 +180,7 @@ jobs:
         run: |
           cd ${{ github.workspace }}/build
           make -C external/petsc/src/petsc install
-          for step in mkdir download update update_disconnected patch configure build install done; do
+          for step in mkdir download update update_disconnected patch patch_disconnected configure build install done; do
             touch external/petsc/src/petsc-stamp/petsc-${step}
           done
           touch CMakeFiles/petsc-complete
