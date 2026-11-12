@@ -104,8 +104,8 @@ jobs:
         id: cache-petsc
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/build/external/petsc
-          key: superbuild-petsc-v3.20.0-ubuntu-22.04-debug
+          path: ${{ github.workspace }}/build/petsc-install-cache
+          key: superbuild-petsc-v3.20.0-ubuntu-22.04-debug-v2
 
       - name: configure
         run: |
@@ -121,11 +121,19 @@ jobs:
             -DXSDK_WITH_CRUNCHFLOW=ON \
             -DXSDK_WITH_ONNX=ON
 
+      - name: petsc-install
+        if: steps.cache-petsc.outputs.cache-hit != 'true'
+        run: |
+          cd ${{ github.workspace }}/build
+          make -j2 petsc
+          cp -a install petsc-install-cache
+
       - name: restore-cached-petsc-install
         if: steps.cache-petsc.outputs.cache-hit == 'true'
         run: |
           cd ${{ github.workspace }}/build
-          make -C external/petsc/src/petsc install
+          mkdir -p install external/petsc/src/petsc-stamp
+          cp -a petsc-install-cache/. install/
           for step in mkdir download update update_disconnected patch patch_disconnected configure build install done; do
             touch external/petsc/src/petsc-stamp/petsc-${step}
           done
@@ -157,8 +165,8 @@ jobs:
         id: cache-petsc
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/build/external/petsc
-          key: superbuild-petsc-v3.20.0-macos-14-arm64-debug
+          path: ${{ github.workspace }}/build/petsc-install-cache
+          key: superbuild-petsc-v3.20.0-macos-14-arm64-debug-v2
 
       - name: configure
         run: |
@@ -175,11 +183,19 @@ jobs:
             -DXSDK_WITH_CRUNCHFLOW=ON \
             -DXSDK_WITH_ONNX=ON
 
+      - name: petsc-install
+        if: steps.cache-petsc.outputs.cache-hit != 'true'
+        run: |
+          cd ${{ github.workspace }}/build
+          make -j2 petsc
+          cp -a install petsc-install-cache
+
       - name: restore-cached-petsc-install
         if: steps.cache-petsc.outputs.cache-hit == 'true'
         run: |
           cd ${{ github.workspace }}/build
-          make -C external/petsc/src/petsc install
+          mkdir -p install external/petsc/src/petsc-stamp
+          cp -a petsc-install-cache/. install/
           for step in mkdir download update update_disconnected patch patch_disconnected configure build install done; do
             touch external/petsc/src/petsc-stamp/petsc-${step}
           done
