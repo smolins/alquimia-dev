@@ -1,7 +1,7 @@
 include(add_alquimia_unit_test)
 add_alquimia_unit_test(test_alquimia_c_utils_exe test_alquimia_c_utils.c)
 
-if (XSDK_WITH_ONNX)
+if (ALQUIMIA_HAVE_ONNX)
   # test_alquimia_onnx_mapping.c
   add_alquimia_unit_test(test_alquimia_onnx_mapping_exe
     test_alquimia_onnx_mapping.c onnx_test_utils.c)

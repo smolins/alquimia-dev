@@ -75,8 +75,6 @@
 #include "alquimia/alquimia_util.h"
 #include "alquimia/onnx_alquimia_config.h"
 
-#if ALQUIMIA_HAVE_ONNX
-
 /* --------------------DATA STRUCTURES USED HERE ONLY ----------------------------*/
 /* Mapping struct for the AlquimiaState*/
 typedef enum {
@@ -2824,5 +2822,3 @@ void onnx_alquimia_getproblemmetadata(
                       mapping.feature);
   }
 }
-
-#endif /* ALQUIMIA_HAVE_ONNX */

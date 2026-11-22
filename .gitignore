@@ -8,6 +8,7 @@
 
 # Binary files.
 *.pdf
+*.zip
 
 # Generated files
 build/

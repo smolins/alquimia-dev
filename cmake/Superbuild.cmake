@@ -229,16 +229,21 @@ if (XSDK_WITH_ONNX)
       DEPENDERS install
   )
 
-  # Declare ONNX pre-built binary package as an ExternalProject target.
-  # Since this uses official pre-compiled assets from Microsoft, the configure
-  # and build commands are left empty to bypass compilation overhead.
-  # Filesystem encapsulation is strictly enforced at the installation stage.
+  # ONNX Runtime pre-built binaries (no compilation). The primary source is
+  # the GitHub release. If that download fails, the same version is taken from
+  # the NuGet package Microsoft.ML.OnnxRuntime, pinned by hash; NuGet packages
+  # cannot be deleted, only unlisted. The archive is fetched at configure time
+  # so the fallback is decided before the build starts. To retry GitHub after
+  # a fallback, delete ${CMAKE_BINARY_DIR}/external/onnx-download.
   set(ONNX_VERSION "1.27.0")
+  set(ONNX_NUGET_SHA256 "c725e8cefdfe4de08befb9f79b3f218c162439cdcdb97cbbb5192888d58ea669")
   if (APPLE)
     if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
       set(ONNX_PLATFORM "osx-arm64")
+      set(ONNX_NUGET_RID "osx-arm64")
     else()
       set(ONNX_PLATFORM "osx-x86_64")
+      set(ONNX_NUGET_RID "")  # NuGet ships no macOS x86_64 library.
     endif()
     set(ONNX_LIB_NAME "libonnxruntime.dylib")
     set(ONNX_VERSIONED_LIB_NAME "libonnxruntime.${ONNX_VERSION}.dylib")
@@ -246,25 +251,78 @@ if (XSDK_WITH_ONNX)
   else()
     if (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
       set(ONNX_PLATFORM "linux-aarch64")
+      set(ONNX_NUGET_RID "linux-arm64")
     else()
       set(ONNX_PLATFORM "linux-x64")
+      set(ONNX_NUGET_RID "linux-x64")
     endif()
     set(ONNX_LIB_NAME "libonnxruntime.so")
     set(ONNX_VERSIONED_LIB_NAME "libonnxruntime.so.${ONNX_VERSION}")
     set(ONNX_SOVERSION_LIB_NAME "libonnxruntime.so.1")
   endif()
 
+  set(ONNX_GITHUB_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-${ONNX_PLATFORM}-${ONNX_VERSION}.tgz")
+  set(ONNX_NUGET_URL "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ONNX_VERSION}/microsoft.ml.onnxruntime.${ONNX_VERSION}.nupkg")
+  set(ONNX_DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/external/onnx-download)
+  set(ONNX_GITHUB_FILE ${ONNX_DOWNLOAD_DIR}/onnxruntime-${ONNX_PLATFORM}-${ONNX_VERSION}.tgz)
+  # A .zip name so ExternalProject knows how to extract the .nupkg archive.
+  set(ONNX_NUGET_FILE ${ONNX_DOWNLOAD_DIR}/microsoft.ml.onnxruntime.${ONNX_VERSION}.nupkg.zip)
+
+  if (NOT EXISTS ${ONNX_GITHUB_FILE} AND NOT EXISTS ${ONNX_NUGET_FILE})
+    message(STATUS "Downloading ONNX Runtime ${ONNX_VERSION} from GitHub")
+    file(DOWNLOAD ${ONNX_GITHUB_URL} ${ONNX_GITHUB_FILE}.part STATUS ONNX_STATUS)
+    list(GET ONNX_STATUS 0 ONNX_STATUS_CODE)
+    if (ONNX_STATUS_CODE EQUAL 0)
+      file(RENAME ${ONNX_GITHUB_FILE}.part ${ONNX_GITHUB_FILE})
+    else()
+      file(REMOVE ${ONNX_GITHUB_FILE}.part)
+      list(GET ONNX_STATUS 1 ONNX_STATUS_MESSAGE)
+      if (NOT ONNX_NUGET_RID)
+        message(FATAL_ERROR "ONNX Runtime GitHub download failed (${ONNX_STATUS_MESSAGE}), and NuGet has no ${ONNX_PLATFORM} library to fall back on.")
+      endif()
+      message(STATUS "ONNX Runtime GitHub download failed (${ONNX_STATUS_MESSAGE}); falling back to NuGet")
+      file(DOWNLOAD ${ONNX_NUGET_URL} ${ONNX_NUGET_FILE}.part
+           EXPECTED_HASH SHA256=${ONNX_NUGET_SHA256} STATUS ONNX_STATUS)
+      list(GET ONNX_STATUS 0 ONNX_STATUS_CODE)
+      if (NOT ONNX_STATUS_CODE EQUAL 0)
+        file(REMOVE ${ONNX_NUGET_FILE}.part)
+        list(GET ONNX_STATUS 1 ONNX_STATUS_MESSAGE)
+        message(FATAL_ERROR "ONNX Runtime NuGet download failed: ${ONNX_STATUS_MESSAGE}")
+      endif()
+      file(RENAME ${ONNX_NUGET_FILE}.part ${ONNX_NUGET_FILE})
+    endif()
+  endif()
+
+  # The two archives lay out headers and libraries differently.
+  if (EXISTS ${ONNX_GITHUB_FILE})
+    message(STATUS "Using ONNX Runtime ${ONNX_VERSION} from GitHub release")
+    set(ONNX_ARCHIVE ${ONNX_GITHUB_FILE})
+    set(ONNX_ARCHIVE_HASH "")
+    set(ONNX_INCLUDE_SUBDIR include)
+    set(ONNX_INSTALL_LIB_COMMANDS
+        COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/${ONNX_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_LIB_NAME}
+        COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/${ONNX_VERSIONED_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_VERSIONED_LIB_NAME}
+        COMMAND ${CMAKE_COMMAND} -E create_symlink ${ONNX_VERSIONED_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_SOVERSION_LIB_NAME})
+  else()
+    message(STATUS "Using ONNX Runtime ${ONNX_VERSION} from NuGet")
+    set(ONNX_ARCHIVE ${ONNX_NUGET_FILE})
+    set(ONNX_ARCHIVE_HASH URL_HASH SHA256=${ONNX_NUGET_SHA256})
+    set(ONNX_INCLUDE_SUBDIR build/native/include)
+    set(ONNX_INSTALL_LIB_COMMANDS
+        COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/runtimes/${ONNX_NUGET_RID}/native/${ONNX_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_LIB_NAME}
+        COMMAND ${CMAKE_COMMAND} -E create_symlink ${ONNX_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_SOVERSION_LIB_NAME})
+  endif()
+
   ExternalProject_Add(onnx
-      URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-${ONNX_PLATFORM}-${ONNX_VERSION}.tgz"
+      URL ${ONNX_ARCHIVE}
+      ${ONNX_ARCHIVE_HASH}
       PREFIX ${CMAKE_BINARY_DIR}/external/onnx
       CONFIGURE_COMMAND ""
       BUILD_COMMAND ""
       INSTALL_COMMAND ${CMAKE_COMMAND} -E make_directory ${INSTALL_DIR}/include/onnxruntime
-              COMMAND ${CMAKE_COMMAND} -E copy_directory <SOURCE_DIR>/include ${INSTALL_DIR}/include/onnxruntime
+              COMMAND ${CMAKE_COMMAND} -E copy_directory <SOURCE_DIR>/${ONNX_INCLUDE_SUBDIR} ${INSTALL_DIR}/include/onnxruntime
               COMMAND ${CMAKE_COMMAND} -E make_directory ${INSTALL_DIR}/lib
-              COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/${ONNX_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_LIB_NAME}
-              COMMAND ${CMAKE_COMMAND} -E copy <SOURCE_DIR>/lib/${ONNX_VERSIONED_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_VERSIONED_LIB_NAME}
-              COMMAND ${CMAKE_COMMAND} -E create_symlink ${ONNX_VERSIONED_LIB_NAME} ${INSTALL_DIR}/lib/${ONNX_SOVERSION_LIB_NAME}
+              ${ONNX_INSTALL_LIB_COMMANDS}
   )
 
   # Register 'onnx' as a hard dependency of Alquimia Core.

@@ -121,15 +121,15 @@ else ()
   endif ()
 endif ()
 
-# Here we make sure CMake-installed binaries use the correct runpath, and 
-# that the path is not stripped during installation.
+# Here we make sure CMake-installed binaries use the correct runpath, and
+# that the path is not stripped during installation. Third-party libraries
+# outside the build tree (e.g. ONNX Runtime, which uses @rpath on macOS) are
+# added to the runpath even when Alquimia itself is built statically.
 if (BUILD_SHARED_LIBS)
   set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
-  set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-  set(CMAKE_SKIP_INSTALL_RPATH FALSE)
-else ()
-  set(CMAKE_SKIP_INSTALL_RPATH TRUE)
 endif ()
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(CMAKE_SKIP_INSTALL_RPATH FALSE)
 
 # Check third-party library dependencies.
 set(ALQUIMIA_NEED_PETSC 0)
