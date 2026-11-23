@@ -452,51 +452,68 @@ static bool FindFlatTensorElement(
 }
 
 /**
- * @brief Allows a shared feature name only across compatible fields at one index.
- * @param[in] mappings Existing flattened input or output mappings.
- * @param[in] mapping Candidate state destination.
- * @param[in] seen Marks the mappings that have already been populated.
- * @param[in] num_mappings Number of entries in the mapping and seen arrays.
- * @param[in] feature Case-sensitive feature name to validate.
- * @param[in] mapping_kind Mapping direction ("input" or "output") for error messages.
- * @param[in] allow_same_state True when comparing an output against input mappings.
- * @param[out] status Returns an engine-integrity error for a duplicate name.
- * @return True when the feature name does not conflict with existing mappings.
+ * @brief Checks feature names across all mappings, inputs first, then outputs.
+ * @param[in] onnx_state Engine whose input and output mappings are complete.
+ * @param[out] status Returns an engine-integrity error for the first conflict.
+ * @return True when the names are consistent.
+ *
+ * Feature names double as metadata names (GetProblemMetaData), so:
+ * - a name may repeat only at the same state index, either for fields that
+ *   share a metadata vector (e.g. total_mobile and total_immobile), or for
+ *   the same field read by an input and written by an output;
+ * - two different names may not target the same metadata vector and index.
  */
-static bool ValidateUniqueFeature(
-    const FeatureMapping *mappings,
-    const FeatureMapping *mapping,
-    const bool *seen,
-    size_t num_mappings,
-    const char *feature,
-    const char *mapping_kind,
-    bool allow_same_state,
+static bool ValidateFeatureNames(
+    const OnnxEngineState *onnx_state,
     AlquimiaEngineStatus *status)
 {
-  size_t i;
+  size_t num_inputs = onnx_state->total_flat_inputs;
+  size_t num_all = num_inputs + onnx_state->total_flat_outputs;
+  size_t a;
+  size_t b;
 
-  for (i = 0; i < num_mappings; ++i)
+  for (b = 0; b < num_all; ++b)
   {
-    if (seen[i] && strcmp(mappings[i].feature, feature) == 0)
+    const FeatureMapping *later = b < num_inputs
+        ? &onnx_state->input_mappings[b]
+        : &onnx_state->output_mappings[b - num_inputs];
+    for (a = 0; a < b; ++a)
     {
+      const FeatureMapping *earlier = a < num_inputs
+          ? &onnx_state->input_mappings[a]
+          : &onnx_state->output_mappings[a - num_inputs];
       bool same_index =
-          mapping->alquimia_state_index == mappings[i].alquimia_state_index;
-      bool same_state =
-          mapping->alquimia_state == mappings[i].alquimia_state;
+          earlier->alquimia_state_index == later->alquimia_state_index;
+      bool same_field = earlier->alquimia_state == later->alquimia_state;
+      bool shares = SharesMetadataNames(earlier->alquimia_state,
+                                        later->alquimia_state);
 
-      /* A name may repeat at the same index across fields that share a
-      ** metadata vector (e.g. total_mobile and total_immobile). */
-      if (same_index &&
-          ((allow_same_state && same_state) ||
-           (!same_state && SharesMetadataNames(mapping->alquimia_state,
-                                               mappings[i].alquimia_state))))
+      if (strcmp(earlier->feature, later->feature) == 0)
       {
-        continue;
+        bool input_and_output = a < num_inputs && b >= num_inputs;
+        bool allowed = same_index &&
+                       (input_and_output ? (same_field || shares)
+                                         : (!same_field && shares));
+        if (!allowed)
+        {
+          status->error = kAlquimiaErrorEngineIntegrity;
+          snprintf(status->message, kAlquimiaMaxStringLength,
+                   "Duplicate ONNX %s feature name '%s'.",
+                   b < num_inputs ? "input" : "output", later->feature);
+          return false;
+        }
       }
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Duplicate ONNX %s feature name '%s'.", mapping_kind, feature);
-      return false;
+      else if (shares && same_index)
+      {
+        status->error = kAlquimiaErrorEngineIntegrity;
+        snprintf(status->message, kAlquimiaMaxStringLength,
+                 "Conflicting ONNX feature names '%s' and '%s' for "
+                 "AlquimiaState variable '%s' index %d.",
+                 earlier->feature, later->feature,
+                 FieldInfoFor(later->alquimia_state)->name,
+                 later->alquimia_state_index);
+        return false;
+      }
     }
   }
   return true;
@@ -630,306 +647,157 @@ static bool ResolveConditionMapping(
 }
 
 /**
- * @brief Rejects a feature name that conflicts at one metadata destination.
- * @param[in] mappings Existing flattened input or output mappings.
- * @param[in] seen Marks mappings that have already been populated.
- * @param[in] num_mappings Number of entries in the mapping and seen arrays.
- * @param[in] mapping Parsed runtime destination for the candidate mapping.
- * @param[in] config_mapping Candidate config mapping and feature name.
- * @param[out] status Returns an engine-integrity error for a conflict.
- * @return True when the candidate is compatible with all populated mappings.
+ * @brief Maps the config entries of one role (inputs or outputs) onto the
+ *        flattened tensor elements.
+ * @param[in] entries Config mappings for this role.
+ * @param[in] num_entries Number of config mappings.
+ * @param[in] tensors Inspected model tensors for this role.
+ * @param[in] total_flat Total number of flattened tensor elements.
+ * @param[out] mappings Array of @p total_flat runtime mappings to fill.
+ * @param[in] is_output True for outputs (total_mobile_immobile is input-only).
+ * @param[in,out] sizes Grown to fit every mapped state index.
+ * @param[out] status Returns the first mapping error.
+ * @return True when every tensor element is mapped exactly once.
  */
-static bool ValidateConsistentFeatureName(
-    const FeatureMapping *mappings,
-    const bool *seen,
-    size_t num_mappings,
-    const FeatureMapping *mapping,
-    const OnnxAlquimiaMapping *config_mapping,
+static bool BuildRoleMappings(
+    const OnnxAlquimiaMapping *entries,
+    size_t num_entries,
+    const OrtTensor *tensors,
+    size_t total_flat,
+    FeatureMapping *mappings,
+    bool is_output,
+    AlquimiaSizes *sizes,
     AlquimiaEngineStatus *status)
 {
+  const char *kind = is_output ? "output" : "input";
+  bool *seen = (bool *)calloc(total_flat, sizeof(bool));
+  bool ok = false;
   size_t i;
 
-  for (i = 0; i < num_mappings; ++i)
+  if (seen == NULL)
   {
-    const FeatureMapping *other = &mappings[i];
-    if (seen[i] &&
-        SharesMetadataNames(other->alquimia_state, mapping->alquimia_state) &&
-        other->alquimia_state_index == mapping->alquimia_state_index &&
-        strcmp(other->feature, config_mapping->feature) != 0)
+    status->error = kAlquimiaErrorEngineIntegrity;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Memory allocation failed for ONNX config mappings.");
+    return false;
+  }
+
+  for (i = 0; i < num_entries; ++i)
+  {
+    const OnnxAlquimiaMapping *entry = &entries[i];
+    size_t flat_index = 0;
+
+    if (!FindFlatTensorElement(entry->tensor, entry->tensor_element_index,
+                               tensors->num_tensors, tensors->names,
+                               tensors->total_size, &flat_index, status))
+    {
+      goto done;
+    }
+    if (seen[flat_index])
     {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength,
-               "Conflicting ONNX feature names '%s' and '%s' for "
-               "AlquimiaState variable '%s' index %d.",
-               other->feature, config_mapping->feature,
-               config_mapping->alquimia_state,
-               config_mapping->alquimia_state_index);
-      return false;
+               "Duplicate ONNX %s mapping for tensor '%s' element index %zu.",
+               kind, entry->tensor, entry->tensor_element_index);
+      goto done;
+    }
+    if (!ParseConfigMapping(entry->alquimia_state, entry->alquimia_state_index,
+                            &mappings[flat_index], status))
+    {
+      goto done;
+    }
+    if (is_output &&
+        mappings[flat_index].alquimia_state == kFieldTotalMobileImmobile)
+    {
+      status->error = kAlquimiaErrorEngineIntegrity;
+      snprintf(status->message, kAlquimiaMaxStringLength,
+               "ONNX total_mobile_immobile is an input-only mapping.");
+      goto done;
+    }
+    /* Not copied: onnx_config lives as long as the engine. */
+    mappings[flat_index].feature = entry->feature;
+    seen[flat_index] = true;
+    UpdateSizesForMapping(&mappings[flat_index], sizes);
+  }
+
+  for (i = 0; i < total_flat; ++i)
+  {
+    if (!seen[i])
+    {
+      status->error = kAlquimiaErrorEngineIntegrity;
+      snprintf(status->message, kAlquimiaMaxStringLength,
+               "ONNX config does not map every %s tensor element index.", kind);
+      goto done;
     }
   }
-  return true;
+  ok = true;
+
+done:
+  free(seen);
+  return ok;
 }
 
 /**
- * @brief Builds complete flat input/output mappings from the parsed onnx_config.
- * @param[in,out] onnx_state Inspected model state and destination for runtime mappings.
- * @param[in,out] sizes Returns dimensions derived from the highest mapped indices.
- * @param[out] status Returns allocation or semantic-validation errors.
- * @return True only when every tensor element index has exactly one mapping.
- *
- * Input feature names are copied before the onnx_config is released. The seen
- * arrays enforce complete coverage and prevent duplicate tensor indices;
- * name-category checks preserve the metadata representation invariant.
+ * @brief Builds the flat input/output mappings and the state sizes.
+ * @param[in,out] onnx_state Inspected model state; receives the mappings.
+ * @param[out] sizes Dimensions derived from the highest mapped indices,
+ *        including state fields that conditions initialize.
+ * @param[out] status Returns allocation or validation errors. Partial
+ *        allocations are released by shutdown.
+ * @return True when every tensor element has exactly one valid mapping.
  */
 static bool BuildConfigMappings(
     OnnxEngineState *onnx_state,
     AlquimiaSizes *sizes,
     AlquimiaEngineStatus *status)
 {
-  /* Check if there is duplicate value in the JSON 
-  ** They are for the 1-dimension array
-  ** The input/output mapping are all 1-dimension arrays
-  */
-  bool *input_seen;
-  bool *output_seen;
+  const OnnxAlquimiaConfig *config = &onnx_state->onnx_config;
   size_t i;
+  size_t j;
 
-  /* Memory Allocation */
   onnx_state->input_mappings = (FeatureMapping *)calloc(
       onnx_state->total_flat_inputs, sizeof(*onnx_state->input_mappings));
   onnx_state->output_mappings = (FeatureMapping *)calloc(
       onnx_state->total_flat_outputs, sizeof(*onnx_state->output_mappings));
-  input_seen = (bool *)calloc(onnx_state->total_flat_inputs, sizeof(bool));
-  output_seen = (bool *)calloc(onnx_state->total_flat_outputs, sizeof(bool));
-  if (onnx_state->input_mappings == NULL ||
-      onnx_state->output_mappings == NULL ||
-      input_seen == NULL || output_seen == NULL)
+  if (onnx_state->input_mappings == NULL || onnx_state->output_mappings == NULL)
   {
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength,
              "Memory allocation failed for ONNX config mappings.");
-    free(input_seen);
-    free(output_seen);
     return false;
   }
-  /* Initialize AlquimiaSize */
   memset(sizes, 0, sizeof(*sizes));
 
-  /* For every input tensor */
-  for (i = 0; i < onnx_state->onnx_config.num_inputs; ++i)
+  /* Coverage is checked before names, since names need every mapping. */
+  if (!BuildRoleMappings(config->inputs, config->num_inputs,
+                         &onnx_state->input_tensors,
+                         onnx_state->total_flat_inputs,
+                         onnx_state->input_mappings, false, sizes, status) ||
+      !BuildRoleMappings(config->outputs, config->num_outputs,
+                         &onnx_state->output_tensors,
+                         onnx_state->total_flat_outputs,
+                         onnx_state->output_mappings, true, sizes, status) ||
+      !ValidateFeatureNames(onnx_state, status))
   {
-    /* This points to the real OnnxEngine->onnx_config.inputMapping */
-    const OnnxAlquimiaMapping *config_input =
-        &onnx_state->onnx_config.inputs[i];
-    FeatureMapping *mapping;
-    size_t flat_index;
-
-    /* Map the tensor element index into the 1-dimensional flattened array. */
-    if (!FindFlatTensorElement(config_input->tensor,
-                               config_input->tensor_element_index,
-                               onnx_state->input_tensors.num_tensors,
-                               onnx_state->input_tensors.names,
-                               onnx_state->input_tensors.total_size,
-                               &flat_index, status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Find the duplicate value */
-    if (input_seen[flat_index])
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Duplicate ONNX input mapping for tensor '%s' element index %zu.",
-               config_input->tensor, config_input->tensor_element_index);
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    mapping = &onnx_state->input_mappings[flat_index];
-    /* Parse the AlquimiaState value to the input mapping */
-    if (!ParseConfigMapping(config_input->alquimia_state,
-                            config_input->alquimia_state_index, mapping,
-                            status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Check the duplicate input feature */
-    if (!ValidateUniqueFeature(
-            onnx_state->input_mappings, mapping, input_seen,
-            onnx_state->total_flat_inputs, config_input->feature, "input",
-            false, status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Check if there are conflicted input features that target the same
-    ** AlquimiaState metadata name.
-    */
-    if (!ValidateConsistentFeatureName(
-            onnx_state->input_mappings, input_seen,
-            onnx_state->total_flat_inputs, mapping, config_input, status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Copy the feature name */
-    /* Not copied: onnx_config lives as long as the engine. */
-    mapping->feature = config_input->feature;
-    /* Find the input tensor element for the first time */
-    input_seen[flat_index] = true;
-    /* Update the respective AlquimiaSize when finding new input tensor element */
-    UpdateSizesForMapping(mapping, sizes);
+    return false;
   }
 
-  /* For every output tensor */
-  for (i = 0; i < onnx_state->onnx_config.num_outputs; ++i)
+  /* A condition may initialize a field the model does not read for a known
+  ** feature (e.g. mineral_specific_surface_area when the model reads
+  ** mineral_volume_fraction), so size the state for those too.
+  ** ResolveConditionMapping rejects incompatible fields and ignores
+  ** features the model does not use (mapping.feature == NULL). */
+  for (i = 0; i < config->num_conditions; ++i)
   {
-    /* This points to the real OnnxEngine->onnx_config.outputMapping */
-    const OnnxAlquimiaMapping *config_output =
-        &onnx_state->onnx_config.outputs[i];
-    FeatureMapping *mapping;
-    size_t flat_index;
-
-    /* Map the tensor element index into the 1-dimensional flattened array. */
-    if (!FindFlatTensorElement(config_output->tensor,
-                               config_output->tensor_element_index,
-                               onnx_state->output_tensors.num_tensors,
-                               onnx_state->output_tensors.names,
-                               onnx_state->output_tensors.total_size,
-                               &flat_index, status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Find the duplicate value */
-    if (output_seen[flat_index])
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Duplicate ONNX output mapping for tensor '%s' element index %zu.",
-               config_output->tensor, config_output->tensor_element_index);
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    mapping = &onnx_state->output_mappings[flat_index];
-    /* Parse the AlquimiaState value to the output mapping */
-    if (!ParseConfigMapping(config_output->alquimia_state,
-                            config_output->alquimia_state_index, mapping,
-                            status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* total_mobile_immobile can only be the input alquimia state schema */
-    if (mapping->alquimia_state == kFieldTotalMobileImmobile)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "ONNX total_mobile_immobile is an input-only mapping.");
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Check the duplicate output feature */
-    if (!ValidateUniqueFeature(
-            onnx_state->input_mappings, mapping, input_seen,
-            onnx_state->total_flat_inputs, config_output->feature, "output",
-            true, status) ||
-        !ValidateUniqueFeature(
-            onnx_state->output_mappings, mapping, output_seen,
-            onnx_state->total_flat_outputs, config_output->feature, "output",
-            false, status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Compare between output mapping and input mappings */
-    if (!ValidateConsistentFeatureName(
-            onnx_state->input_mappings, input_seen,
-            onnx_state->total_flat_inputs, mapping, config_output, status) ||
-        /* Compare between output mapping and output mappings */
-        !ValidateConsistentFeatureName(
-            onnx_state->output_mappings, output_seen,
-            onnx_state->total_flat_outputs, mapping, config_output, status))
-    {
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-    /* Not copied: onnx_config lives as long as the engine. */
-    mapping->feature = config_output->feature;
-    /* Find the output tensor element for the first time */
-    output_seen[flat_index] = true;
-    /* Update the respective AlquimiaSize when finding new output tensor element */
-    UpdateSizesForMapping(mapping, sizes);
-  }
-
-  for (i = 0; i < onnx_state->total_flat_inputs; ++i)
-  {
-    if (!input_seen[i])
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "ONNX config does not map every input tensor element index.");
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-  }
-  for (i = 0; i < onnx_state->total_flat_outputs; ++i)
-  {
-    if (!output_seen[i])
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "ONNX config does not map every output tensor element index.");
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
-  }
-
-  free(input_seen);
-  free(output_seen);
-  
-  /* 
-   * Expand state allocation sizes to accommodate valid, extra condition fields.
-   *
-   * A user's JSON condition may initialize a related state field (e.g., 
-   * mineral_specific_surface_area) for a known component, even if the ONNX 
-   * model only explicitly requires a different field (e.g., mineral_volume_fraction) 
-   * for that same component.
-   *
-   * ResolveConditionMapping validates these category-compatible fields and 
-   * safely ignores completely unrelated features (returning mapping.feature == NULL).
-   * For valid matches, UpdateSizesForMapping ensures the Alquimia state vector 
-   * allocates enough memory slots to store these initialized values.
-   */
-  for (i = 0; i < onnx_state->onnx_config.num_conditions; ++i)
-  {
-    const OnnxAlquimiaCondition *condition = &onnx_state->onnx_config.conditions[i];
-    size_t j;
+    const OnnxAlquimiaCondition *condition = &config->conditions[i];
     for (j = 0; j < condition->num_items; ++j)
     {
       FeatureMapping mapping;
-
-      /* Validate the condition item against known model inputs */
-      if (!ResolveConditionMapping(onnx_state, &condition->items[j], &mapping, status))
+      if (!ResolveConditionMapping(onnx_state, &condition->items[j], &mapping,
+                                   status))
       {
-        return false; /* Fails immediately on ambiguous or physically incompatible fields */
+        return false;
       }
-
-      /* If the feature is relevant to the model (not safely ignored), update memory sizes */
       if (mapping.feature != NULL)
       {
         UpdateSizesForMapping(&mapping, sizes);
@@ -1133,50 +1001,25 @@ static void SetAlquimiaValue(
 }
 
 /**
- * @brief Checks whether the model explicitly reads one state element.
- * @param[in] onnx_state Engine containing the flattened input mappings.
+ * @brief Checks whether any mapping in an array refers to one state element.
+ * @param[in] mappings Flattened input or output mappings.
+ * @param[in] num_mappings Number of entries in @p mappings.
  * @param[in] alquimia_state State field to find.
  * @param[in] alquimia_state_index Zero-based state-vector index to find.
- * @return True when an input tensor element maps to the requested state element.
+ * @return True when a mapping refers to the requested state element.
  */
-static bool HasMappedInput(
-    const OnnxEngineState *onnx_state,
+static bool HasMapping(
+    const FeatureMapping *mappings,
+    size_t num_mappings,
     StateField alquimia_state,
     int alquimia_state_index)
 {
   size_t i;
 
-  for (i = 0; i < onnx_state->total_flat_inputs; ++i)
+  for (i = 0; i < num_mappings; ++i)
   {
-    const FeatureMapping *mapping = &onnx_state->input_mappings[i];
-    if (mapping->alquimia_state == alquimia_state &&
-        mapping->alquimia_state_index == alquimia_state_index)
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * @brief Checks whether the model explicitly outputs one state element.
- * @param[in] onnx_state Engine containing the flattened output mappings.
- * @param[in] alquimia_state State field to find.
- * @param[in] alquimia_state_index Zero-based state-vector index to find.
- * @return True when an output tensor element maps to the requested state element.
- */
-static bool HasMappedOutput(
-    const OnnxEngineState *onnx_state,
-    StateField alquimia_state,
-    int alquimia_state_index)
-{
-  size_t i;
-
-  for (i = 0; i < onnx_state->total_flat_outputs; ++i)
-  {
-    const FeatureMapping *mapping = &onnx_state->output_mappings[i];
-    if (mapping->alquimia_state == alquimia_state &&
-        mapping->alquimia_state_index == alquimia_state_index)
+    if (mappings[i].alquimia_state == alquimia_state &&
+        mappings[i].alquimia_state_index == alquimia_state_index)
     {
       return true;
     }
@@ -1228,10 +1071,10 @@ static bool BuildPairedOutputLookup(
       continue;
     }
     onnx_state->output_has_paired_mapping[i] =
-        !HasMappedInput(onnx_state, kFieldTotalMobileImmobile,
-                        mapping->alquimia_state_index) ||
-        HasMappedOutput(onnx_state, paired_state,
-                        mapping->alquimia_state_index);
+        !HasMapping(onnx_state->input_mappings, onnx_state->total_flat_inputs,
+                    kFieldTotalMobileImmobile, mapping->alquimia_state_index) ||
+        HasMapping(onnx_state->output_mappings, onnx_state->total_flat_outputs,
+                   paired_state, mapping->alquimia_state_index);
   }
   return true;
 }
@@ -1797,11 +1640,14 @@ void onnx_alquimia_setup(
   ** remains safe because each process owns its engine state. */
   functionality->thread_safe = false;
   functionality->temperature_dependent =
-      HasMappedInput(onnx_state, kFieldTemperature, 0);
+      HasMapping(onnx_state->input_mappings, onnx_state->total_flat_inputs,
+                 kFieldTemperature, 0);
   functionality->pressure_dependent =
-      HasMappedInput(onnx_state, kFieldAqueousPressure, 0);
+      HasMapping(onnx_state->input_mappings, onnx_state->total_flat_inputs,
+                 kFieldAqueousPressure, 0);
   functionality->porosity_update =
-      HasMappedOutput(onnx_state, kFieldPorosity, 0);
+      HasMapping(onnx_state->output_mappings, onnx_state->total_flat_outputs,
+                 kFieldPorosity, 0);
   functionality->operator_splitting = true;
   functionality->global_implicit = false;
   functionality->index_base = 0;
@@ -1921,6 +1767,7 @@ void onnx_alquimia_processcondition(
 {
   OnnxEngineState *onnx_state;
   size_t k;
+  int c;
 
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
@@ -1999,72 +1846,35 @@ void onnx_alquimia_processcondition(
     return;
   }
 
-  // Initial condition provided by driver
-  /* An absent condition intentionally preserves all existing state values. */
-  if (condition == NULL || condition->aqueous_constraints.data == NULL || condition->aqueous_constraints.size <= 0)
+  /* Driver mode: an absent condition preserves the existing state. */
+  if (condition == NULL || condition->aqueous_constraints.data == NULL)
   {
     return;
   }
 
-  /* Generic driver constraints have no explicit field identity. Validate all
-   * destinations before writing, so ambiguous names cannot update both phases.
-   *
-   * TODO / PLACEHOLDER: Waiting for upstream driver logic to mature.
-   * Currently, the driver's AlquimiaAqueousConstraint data structure is incomplete 
-   * for this use case: it provides a component name and a value, but lacks explicit 
-   * physical state labels (e.g., specifying if it belongs to mobile or immobile phases).
-   * 
-   * TWO-PASS TRANSACTIONAL UPDATE (All-or-Nothing):
-   * Because the incoming driver data is ambiguous, we must use a two-pass approach 
-   * to prevent partial memory corruption (which would violate mass conservation):
-   * 
-   * - Pass 0 (Dry-Run / Validation): Iterates through all constraints and validates 
-   *   them against the engine mappings WITHOUT writing to memory. If an ambiguous 
-   *   name is detected (e.g., trying to blindly update both aqueous and solid phases), 
-   *   the function safely aborts leaving the existing state untouched.
-   * - Pass 1 (Execution): Once Pass 0 confirms all constraints map 1-to-1 safely, 
-   *   this pass formally writes the values into the Alquimia state memory slots.
-   * 
-   * Note: Once the driver interface is updated to pass explicit state identities, 
-   * this defensive two-pass logic can be refactored into a standard one-pass assignment.
-   */
-  for (int pass = 0; pass < 2; ++pass)
+  /* Driver constraints carry only a name and a value, with no state field,
+  ** so each is resolved as scalar shorthand: a name the model maps to more
+  ** than one field (e.g. mobile and immobile) is rejected before anything is
+  ** written for it, and names the model does not read are ignored. */
+  for (c = 0; c < condition->aqueous_constraints.size; ++c)
   {
-    for (k = 0; k < onnx_state->total_flat_inputs; ++k)
-    {
-      const AlquimiaAqueousConstraint *constraint = NULL;
-      for (int c_idx = 0; c_idx < condition->aqueous_constraints.size; ++c_idx)
-      {
-        if (strcmp(condition->aqueous_constraints.data[c_idx].primary_species_name,
-                   onnx_state->input_mappings[k].feature) == 0)
-        {
-          constraint = &condition->aqueous_constraints.data[c_idx];
-          break;
-        }
-      }
-      if (constraint == NULL)
-      {
-        continue;
-      }
-      OnnxAlquimiaConditionItem item = {0};
-      FeatureMapping mapping;
+    const AlquimiaAqueousConstraint *constraint =
+        &condition->aqueous_constraints.data[c];
+    OnnxAlquimiaConditionItem item = {0};
+    FeatureMapping mapping;
 
-      /* Treat as scalar shorthand because the driver lacks explicit state info */
-      item.feature = constraint->primary_species_name;
-      item.value = constraint->value;
-      if (!ResolveConditionMapping(onnx_state, &item, &mapping, status))
+    item.feature = constraint->primary_species_name;
+    item.value = constraint->value;
+    if (!ResolveConditionMapping(onnx_state, &item, &mapping, status))
+    {
+      return;
+    }
+    if (mapping.feature != NULL)
+    {
+      SetAlquimiaValue(state, mapping, item.value, status);
+      if (status->error != kAlquimiaNoError)
       {
         return;
-      }
-
-      /* Pass 1 formally writes the data */
-      if (pass == 1 && mapping.feature != NULL)
-      {
-        SetAlquimiaValue(state, mapping, item.value, status);
-        if (status->error != kAlquimiaNoError)
-        {
-          return;
-        }
       }
     }
   }
@@ -2094,7 +1904,9 @@ void onnx_alquimia_reactionstepoperatorsplit(
 {
   OnnxEngineState *onnx_state;
   OrtStatus *ort_status;
-  int i;
+  size_t i;
+  size_t k;
+  size_t flat_index;
   double old_porosity;
   double new_porosity;
 
@@ -2126,25 +1938,22 @@ void onnx_alquimia_reactionstepoperatorsplit(
 
   old_porosity = state->porosity;
   new_porosity = old_porosity;
+
+  /* Fill the input buffers (wrapped by the input OrtValues). */
+  flat_index = 0;
+  for (i = 0; i < onnx_state->input_tensors.num_tensors; ++i)
   {
-    size_t flat_index = 0;
-    for (i = 0; i < (int)onnx_state->input_tensors.num_tensors; ++i)
+    for (k = 0; k < onnx_state->input_tensors.total_size[i]; ++k, ++flat_index)
     {
-      size_t k;
-      for (k = 0; k < onnx_state->input_tensors.total_size[i]; ++k)
+      onnx_state->input_tensors.data[i][k] = GetAlquimiaModelInput(
+          state, properties, onnx_state->input_mappings[flat_index], status);
+      if (status->error != kAlquimiaNoError)
       {
-        onnx_state->input_tensors.data[i][k] = GetAlquimiaModelInput(
-            state, properties, onnx_state->input_mappings[flat_index], status);
-        if (status->error != kAlquimiaNoError)
-        {
-          return;
-        }
-        flat_index++;
+        return;
       }
     }
   }
 
-  /* Run inference using preallocated input and output tensors and dynamic names */
   ort_status = onnx_state->ort.g_ort->Run(
       onnx_state->ort.session,
       NULL, /* RunOptions */
@@ -2154,75 +1963,50 @@ void onnx_alquimia_reactionstepoperatorsplit(
       (const char *const *)onnx_state->output_tensors.names,
       onnx_state->output_tensors.num_tensors,
       onnx_state->output_tensors.tensor);
-
   if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
   {
     return;
   }
 
-  /* Use the final porosity for closure regardless of output mapping order.
-  ** Output tensors wrap the adapter's preallocated data arrays. */
+  /* The output OrtValues wrap output_tensors.data, so Run wrote the results
+  ** there. First pass: reject non-finite values and find the new porosity,
+  ** which the immobile conversions need regardless of output order. */
+  flat_index = 0;
+  for (i = 0; i < onnx_state->output_tensors.num_tensors; ++i)
   {
-    size_t flat_index = 0;
-    for (i = 0; i < (int)onnx_state->output_tensors.num_tensors; ++i)
+    for (k = 0; k < onnx_state->output_tensors.total_size[i]; ++k, ++flat_index)
     {
-      size_t k;
-      for (k = 0; k < onnx_state->output_tensors.total_size[i]; ++k)
+      double value = onnx_state->output_tensors.data[i][k];
+      if (!isfinite(value))
       {
-        double value = onnx_state->output_tensors.data[i][k];
-        if (!isfinite(value))
-        {
-          status->error = kAlquimiaErrorEngineIntegrity;
-          snprintf(status->message, kAlquimiaMaxStringLength,
-                   "Non-finite ONNX output for feature '%s'.",
-                   onnx_state->output_mappings[flat_index].feature);
-          return;
-        }
-        if (onnx_state->output_mappings[flat_index].alquimia_state ==
-            kFieldPorosity)
-        {
-          new_porosity = value;
-        }
-        ++flat_index;
+        status->error = kAlquimiaErrorEngineIntegrity;
+        snprintf(status->message, kAlquimiaMaxStringLength,
+                 "Non-finite ONNX output for feature '%s'.",
+                 onnx_state->output_mappings[flat_index].feature);
+        return;
+      }
+      if (onnx_state->output_mappings[flat_index].alquimia_state ==
+          kFieldPorosity)
+      {
+        new_porosity = value;
       }
     }
   }
 
-  /* Copy output data back through the required explicit mappings. */
+  /* Second pass: write the outputs to the state. */
+  flat_index = 0;
+  for (i = 0; i < onnx_state->output_tensors.num_tensors; ++i)
   {
-    size_t flat_index = 0;
-    for (i = 0; i < (int)onnx_state->output_tensors.num_tensors; ++i)
+    for (k = 0; k < onnx_state->output_tensors.total_size[i]; ++k, ++flat_index)
     {
-      /* Temporary output array used to store the data from the tensor */
-      double *out_arr = NULL;
-      /* Extract the data from the output tensor */
-      ort_status = onnx_state->ort.g_ort->GetTensorMutableData(
-          onnx_state->output_tensors.tensor[i], (void **)&out_arr);
-      if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
+      SetAlquimiaModelOutput(
+          state, properties, old_porosity, new_porosity,
+          onnx_state->output_mappings[flat_index],
+          onnx_state->output_has_paired_mapping[flat_index],
+          onnx_state->output_tensors.data[i][k], status);
+      if (status->error != kAlquimiaNoError)
       {
         return;
-      }
-
-      if (out_arr == NULL)
-      {
-        status->error = kAlquimiaErrorEngineIntegrity;
-        snprintf(status->message, kAlquimiaMaxStringLength, "GetTensorMutableData returned NULL output buffer for output tensor %d.", i);
-        return;
-      }
-
-      size_t k;
-      for (k = 0; k < onnx_state->output_tensors.total_size[i]; ++k)
-      {
-        SetAlquimiaModelOutput(
-            state, properties, old_porosity, new_porosity,
-            onnx_state->output_mappings[flat_index],
-            onnx_state->output_has_paired_mapping[flat_index], out_arr[k],
-            status);
-        if (status->error != kAlquimiaNoError)
-        {
-          return;
-        }
-        flat_index++;
       }
     }
   }
