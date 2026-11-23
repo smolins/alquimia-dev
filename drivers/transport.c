@@ -90,18 +90,14 @@ int main(int argc, char* argv[])
   // Clean up.
   TransportDriverInput_Free(input);
   TransportDriver_Free(transport);
+  int petsc_error = 0;
 #if ALQUIMIA_NEED_PETSC
-  PetscInt petsc_error = PetscFinalize();
+  petsc_error = PetscFinalize();
+#endif
   if (status == EXIT_SUCCESS && petsc_error == 0) 
     printf("Success!\n");
   else 
     printf("Failed!\n");
-#else
-  if (status == EXIT_SUCCESS)
-    printf("Success!\n");
-  else
-    printf("Failed!\n");
-#endif
 
   return status;
 }  
