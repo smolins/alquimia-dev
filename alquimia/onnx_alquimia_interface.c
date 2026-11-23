@@ -1476,10 +1476,213 @@ static void CleanupOnSetupFailure(OnnxEngineState **onnx_state)
   onnx_alquimia_shutdown(onnx_state, &temp_status);
 }
 
+/**
+ * @brief Records one model tensor's shape and wraps a buffer for it.
+ * @param[in] api ONNX Runtime API.
+ * @param[in] memory_info CPU memory info used to create the OrtValue.
+ * @param[in] type_info Type info of the tensor; owned by the caller.
+ * @param[in] kind "input" or "output", used in error messages.
+ * @param[in,out] tensors Collection whose entry @p i is filled in.
+ * @param[in] i Index of the tensor in session order.
+ * @param[out] status Returns errors; partial allocations are left in
+ *        @p tensors for ReleaseOrtTensors.
+ * @return True on success.
+ *
+ * Only double tensors are supported. A dynamic (<= 0) leading extent of a
+ * rank >= 2 tensor is the batch dimension and is fixed to one, because the
+ * interface runs one state at a time; any other dynamic extent is rejected.
+ * A scalar (rank 0) keeps a NULL dimension array and holds one element.
+ */
+static bool InspectTensor(
+    const OrtApi *api,
+    const OrtMemoryInfo *memory_info,
+    const OrtTypeInfo *type_info,
+    const char *kind,
+    OrtTensor *tensors,
+    size_t i,
+    AlquimiaEngineStatus *status)
+{
+  const OrtTensorTypeAndShapeInfo *tensor_info = NULL;
+  ONNXTensorElementDataType element_type;
+  size_t num_dim = 0;
+  size_t total_size = 1;
+  size_t j;
+  int64_t *dims = NULL;
+
+  if (!CheckStatus(api, api->CastTypeInfoToTensorInfo(type_info, &tensor_info), status) ||
+      !CheckStatus(api, api->GetTensorElementType(tensor_info, &element_type), status))
+  {
+    return false;
+  }
+  if (element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE)
+  {
+    status->error = kAlquimiaErrorEngineIntegrity;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "ONNX %s tensor '%s' must have double elements.",
+             kind, tensors->names[i]);
+    return false;
+  }
+  if (!CheckStatus(api, api->GetDimensionsCount(tensor_info, &num_dim), status))
+  {
+    return false;
+  }
+  tensors->num_dim[i] = num_dim;
+  if (num_dim > 0)
+  {
+    dims = (int64_t *)calloc(num_dim, sizeof(int64_t));
+    tensors->dim_values[i] = dims;
+    if (dims == NULL)
+    {
+      status->error = kAlquimiaErrorEngineIntegrity;
+      snprintf(status->message, kAlquimiaMaxStringLength,
+               "Memory allocation failed for ONNX %s tensor dimensions.", kind);
+      return false;
+    }
+    if (!CheckStatus(api, api->GetDimensions(tensor_info, dims, num_dim), status))
+    {
+      return false;
+    }
+  }
+
+  for (j = 0; j < num_dim; ++j)
+  {
+    if (dims[j] <= 0)
+    {
+      if (j != 0 || num_dim == 1)
+      {
+        status->error = kAlquimiaErrorEngineIntegrity;
+        snprintf(status->message, kAlquimiaMaxStringLength,
+                 "ONNX %s tensor '%s' has an unsupported dynamic extent.",
+                 kind, tensors->names[i]);
+        return false;
+      }
+      dims[j] = 1;  /* batch size */
+    }
+    if ((size_t)dims[j] > SIZE_MAX / total_size)
+    {
+      status->error = kAlquimiaErrorEngineIntegrity;
+      snprintf(status->message, kAlquimiaMaxStringLength,
+               "ONNX %s tensor '%s' element count overflows size_t.",
+               kind, tensors->names[i]);
+      return false;
+    }
+    total_size *= (size_t)dims[j];
+  }
+  tensors->total_size[i] = total_size;
+
+  tensors->data[i] = (double *)calloc(total_size, sizeof(double));
+  if (tensors->data[i] == NULL)
+  {
+    status->error = kAlquimiaErrorEngineIntegrity;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Memory allocation failed for ONNX %s tensor data.", kind);
+    return false;
+  }
+  /* The OrtValue wraps data[i]; ONNX Runtime does not own that buffer. */
+  return CheckStatus(api, api->CreateTensorWithDataAsOrtValue(
+                              memory_info, tensors->data[i],
+                              total_size * sizeof(double), dims, num_dim,
+                              ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE,
+                              &tensors->tensor[i]),
+                     status);
+}
+
+/**
+ * @brief Inspects all model inputs or all model outputs.
+ * @param[in] ort Initialized session, memory info and allocator.
+ * @param[in] is_input True for inputs, false for outputs.
+ * @param[out] tensors Receives names, shapes, buffers and OrtValues.
+ * @param[out] total_flat Receives the summed element count of all tensors.
+ * @param[out] status Returns errors; partial allocations are left in
+ *        @p tensors for ReleaseOrtTensors.
+ * @return True on success.
+ */
+static bool InspectTensors(
+    const Ort *ort,
+    bool is_input,
+    OrtTensor *tensors,
+    size_t *total_flat,
+    AlquimiaEngineStatus *status)
+{
+  const OrtApi *api = ort->g_ort;
+  const char *kind = is_input ? "input" : "output";
+  size_t num_tensors = 0;
+  size_t i;
+
+  if (!CheckStatus(api, is_input
+                            ? api->SessionGetInputCount(ort->session, &num_tensors)
+                            : api->SessionGetOutputCount(ort->session, &num_tensors),
+                   status))
+  {
+    return false;
+  }
+  if (num_tensors == 0)
+  {
+    status->error = kAlquimiaErrorEngineIntegrity;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Model has 0 inputs or outputs (no %s tensors).", kind);
+    return false;
+  }
+
+  tensors->num_tensors = num_tensors;
+  tensors->names = (char **)calloc(num_tensors, sizeof(char *));
+  tensors->num_dim = (size_t *)calloc(num_tensors, sizeof(size_t));
+  tensors->dim_values = (int64_t **)calloc(num_tensors, sizeof(int64_t *));
+  tensors->total_size = (size_t *)calloc(num_tensors, sizeof(size_t));
+  tensors->data = (double **)calloc(num_tensors, sizeof(double *));
+  tensors->tensor = (OrtValue **)calloc(num_tensors, sizeof(OrtValue *));
+  if (tensors->names == NULL || tensors->num_dim == NULL ||
+      tensors->dim_values == NULL || tensors->total_size == NULL ||
+      tensors->data == NULL || tensors->tensor == NULL)
+  {
+    status->error = kAlquimiaErrorEngineIntegrity;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Memory allocation failed for ONNX %s tensor arrays.", kind);
+    return false;
+  }
+
+  *total_flat = 0;
+  for (i = 0; i < num_tensors; ++i)
+  {
+    OrtTypeInfo *type_info = NULL;
+    bool ok;
+
+    /* Names are allocated with the session allocator (freed in
+    ** ReleaseOrtTensors). */
+    if (!CheckStatus(api, is_input
+                              ? api->SessionGetInputName(ort->session, i, ort->allocator, &tensors->names[i])
+                              : api->SessionGetOutputName(ort->session, i, ort->allocator, &tensors->names[i]),
+                     status) ||
+        !CheckStatus(api, is_input
+                              ? api->SessionGetInputTypeInfo(ort->session, i, &type_info)
+                              : api->SessionGetOutputTypeInfo(ort->session, i, &type_info),
+                     status))
+    {
+      return false;
+    }
+    ok = InspectTensor(api, ort->memory_info, type_info, kind, tensors, i,
+                       status);
+    api->ReleaseTypeInfo(type_info);
+    if (!ok)
+    {
+      return false;
+    }
+    if (tensors->total_size[i] > SIZE_MAX - *total_flat)
+    {
+      status->error = kAlquimiaErrorEngineIntegrity;
+      snprintf(status->message, kAlquimiaMaxStringLength,
+               "Flattened ONNX %s element count overflows size_t.", kind);
+      return false;
+    }
+    *total_flat += tensors->total_size[i];
+  }
+  return true;
+}
+
 /* ------------------------ ALQUIMIA FUNCTIONS -------------------------------*/
 
 /**
- * @brief Initializes an ONNX engine from a versioned JSON sidecar onnx_config.
+ * @brief Initializes an ONNX engine from a versioned JSON sidecar config.
  * @param[in] input_filename JSON config path; relative model paths resolve from its
  *        directory.
  * @param[in] hands_off Selects named JSON conditions for initialization.
@@ -1488,9 +1691,10 @@ static void CleanupOnSetupFailure(OnnxEngineState **onnx_state)
  * @param[out] functionality Returns the ONNX adapter capability flags.
  * @param[out] status Returns setup errors without being overwritten by cleanup.
  *
- * The destination engine pointer is set to NULL before resource acquisition and
- * remains NULL on every failure. Parsed config storage remains engine-owned so
- * named conditions are available to ProcessCondition.
+ * The destination engine pointer is set to NULL first and stays NULL on every
+ * failure; all failures release partial state through one cleanup path. The
+ * parsed config stays engine-owned so named conditions are available to
+ * ProcessCondition.
  */
 void onnx_alquimia_setup(
     const char *input_filename,
@@ -1501,9 +1705,9 @@ void onnx_alquimia_setup(
     AlquimiaEngineStatus *status)
 {
   OnnxEngineState *onnx_state;
-  OrtStatus *ort_status;
+  Ort *ort;
+  const OrtApi *api;
   FILE *f;
-  size_t i, j;
 
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
@@ -1524,15 +1728,14 @@ void onnx_alquimia_setup(
     snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for OnnxEngineState.");
     return;
   }
-  /* Read the JSON file that serves as input
-  ** and provides the metadata mapping model to alquimia struct */
-  if (!OnnxAlquimiaLoadConfig(
-          input_filename, &onnx_state->onnx_config, status->message,
-          kAlquimiaMaxStringLength))
+  ort = &onnx_state->ort;
+
+  /* JSON config: model path, tensor-to-state mappings, conditions. */
+  if (!OnnxAlquimiaLoadConfig(input_filename, &onnx_state->onnx_config,
+                              status->message, kAlquimiaMaxStringLength))
   {
     status->error = kAlquimiaErrorEngineIntegrity;
-    free(onnx_state);
-    return;
+    goto fail;
   }
   onnx_state->hands_off = hands_off;
   if (hands_off && onnx_state->onnx_config.num_conditions == 0)
@@ -1540,10 +1743,9 @@ void onnx_alquimia_setup(
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength,
              "ONNX hands-off setup requires at least one JSON condition.");
-    OnnxAlquimiaFreeConfig(&onnx_state->onnx_config);
-    free(onnx_state);
-    return;
+    goto fail;
   }
+  /* Checked here for a clearer message than ONNX Runtime's load error. */
   f = fopen(onnx_state->onnx_config.model_path, "rb");
   if (f == NULL)
   {
@@ -1551,542 +1753,43 @@ void onnx_alquimia_setup(
     snprintf(status->message, kAlquimiaMaxStringLength,
              "ONNX model file not found: %s",
              onnx_state->onnx_config.model_path);
-    OnnxAlquimiaFreeConfig(&onnx_state->onnx_config);
-    free(onnx_state);
-    return;
+    goto fail;
   }
   fclose(f);
 
-  onnx_state->ort.g_ort = OrtGetApiBase()->GetApi(ORT_API_VERSION);
-  if (!onnx_state->ort.g_ort)
+  api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+  if (api == NULL)
   {
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength, "Failed to load ONNX Runtime API.");
-    OnnxAlquimiaFreeConfig(&onnx_state->onnx_config);
-    free(onnx_state);
-    return;
+    goto fail;
   }
+  ort->g_ort = api;
 
-  /* Read the ONNX file that contains the model */
-  ort_status = onnx_state->ort.g_ort->CreateEnv(
-      ORT_LOGGING_LEVEL_WARNING, "onnx_alquimia_engine",
-      &onnx_state->ort.env);
-  if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-  {
-    OnnxAlquimiaFreeConfig(&onnx_state->onnx_config);
-    free(onnx_state);
-    return;
-  }
-
-  ort_status = onnx_state->ort.g_ort->CreateSessionOptions(
-      &onnx_state->ort.session_options);
-  if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-  {
-    onnx_state->ort.g_ort->ReleaseEnv(onnx_state->ort.env);
-    OnnxAlquimiaFreeConfig(&onnx_state->onnx_config);
-    free(onnx_state);
-    return;
-  }
-
-  ort_status = onnx_state->ort.g_ort->CreateSession(
-      onnx_state->ort.env, onnx_state->onnx_config.model_path,
-      onnx_state->ort.session_options, &onnx_state->ort.session);
-  if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-  {
-    onnx_state->ort.g_ort->ReleaseSessionOptions(
-        onnx_state->ort.session_options);
-    onnx_state->ort.g_ort->ReleaseEnv(onnx_state->ort.env);
-    OnnxAlquimiaFreeConfig(&onnx_state->onnx_config);
-    free(onnx_state);
-    return;
-  }
-
-  ort_status = onnx_state->ort.g_ort->CreateCpuMemoryInfo(
-      OrtArenaAllocator, OrtMemTypeDefault,
-      &onnx_state->ort.memory_info);
-  if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-  {
-    CleanupOnSetupFailure(&onnx_state);
-    return;
-  }
-
-  ort_status = onnx_state->ort.g_ort->CreateAllocator(
-      onnx_state->ort.session, onnx_state->ort.memory_info,
-      &onnx_state->ort.allocator);
-  if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-  {
-    CleanupOnSetupFailure(&onnx_state);
-    return;
-  }
-
-  /* Query input/output tensor count */
-  size_t num_inputs = 0;
-  ort_status = onnx_state->ort.g_ort->SessionGetInputCount(
-      onnx_state->ort.session, &num_inputs);
-  if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-  {
-    CleanupOnSetupFailure(&onnx_state);
-    return;
-  }
-  onnx_state->input_tensors.num_tensors = num_inputs;
-
-  size_t num_outputs = 0;
-  ort_status = onnx_state->ort.g_ort->SessionGetOutputCount(
-      onnx_state->ort.session, &num_outputs);
-  if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-  {
-    CleanupOnSetupFailure(&onnx_state);
-    return;
-  }
-  onnx_state->output_tensors.num_tensors = num_outputs;
-
-  /* Guard against empty inputs or outputs */
-  if (num_inputs == 0 || num_outputs == 0)
-  {
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Model has 0 inputs or outputs (inputs: %d, outputs: %d).", (int)num_inputs, (int)num_outputs);
-    CleanupOnSetupFailure(&onnx_state);
-    return;
-  }
-
-  /* Allocate outer arrays for inputs */
-  onnx_state->input_tensors.names =
-      (char **)calloc(num_inputs, sizeof(char *));
-  onnx_state->input_tensors.num_dim =
-      (size_t *)calloc(num_inputs, sizeof(size_t));
-  onnx_state->input_tensors.dim_values =
-      (int64_t **)calloc(num_inputs, sizeof(int64_t *));
-  onnx_state->input_tensors.total_size =
-      (size_t *)calloc(num_inputs, sizeof(size_t));
-  onnx_state->input_tensors.data =
-      (double **)calloc(num_inputs, sizeof(double *));
-  onnx_state->input_tensors.tensor =
-      (OrtValue **)calloc(num_inputs, sizeof(OrtValue *));
-
-  /* Guard */
-  if (onnx_state->input_tensors.names == NULL ||
-      onnx_state->input_tensors.num_dim == NULL ||
-      onnx_state->input_tensors.dim_values == NULL ||
-      onnx_state->input_tensors.total_size == NULL ||
-      onnx_state->input_tensors.data == NULL ||
-      onnx_state->input_tensors.tensor == NULL)
-  {
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for input container arrays.");
-    CleanupOnSetupFailure(&onnx_state);
-    return;
-  }
-
-  /* Parse input names and dimensions */
-  for (i = 0; i < num_inputs; ++i)
-  {
-    char *name = NULL;
-    /* Get the names of the input tensor[i] */
-    ort_status = onnx_state->ort.g_ort->SessionGetInputName(
-        onnx_state->ort.session, i, onnx_state->ort.allocator, &name);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    onnx_state->input_tensors.names[i] = name;
-
-    OrtTypeInfo *ort_type_info = NULL;  /* Released by ReleaseTypeInfo */
-    ort_status = onnx_state->ort.g_ort->SessionGetInputTypeInfo(
-        onnx_state->ort.session, i, &ort_type_info);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-
-    const OrtTensorTypeAndShapeInfo *tensor_info = NULL;  /* Do not free this value. It will be valid until ort_type_info is freed */
-    /* Check if the input data type is double */
-    ONNXTensorElementDataType onnx_element_type; /* No need to free. enum */
-    ort_status = onnx_state->ort.g_ort->CastTypeInfoToTensorInfo(
-        ort_type_info, &tensor_info);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Get the input data type */
-    ort_status = onnx_state->ort.g_ort->GetTensorElementType(
-        tensor_info, &onnx_element_type);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Check if the input data type is double */
-    if (onnx_element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE)
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "ONNX input tensor '%s' must have double elements.",
-               onnx_state->input_tensors.names[i]);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Record the dimension number */
-    size_t dim_count = 0;
-    /* Get the number of the dimensions */
-    ort_status = onnx_state->ort.g_ort->GetDimensionsCount(
-        tensor_info, &dim_count);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-
-    /* Preserve the model rank. A scalar has zero dimensions and keeps the
-    ** NULL dimension array initialized by calloc. */
-    onnx_state->input_tensors.num_dim[i] = dim_count;
-    if (dim_count > 0)
-    {
-      onnx_state->input_tensors.dim_values[i] =
-          (int64_t *)calloc(dim_count, sizeof(int64_t));
-      if (onnx_state->input_tensors.dim_values[i] == NULL)
-      {
-        onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-        status->error = kAlquimiaErrorEngineIntegrity;
-        snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for input_dim_values.");
-        CleanupOnSetupFailure(&onnx_state);
-        return;
-      }
-      /* Get the dimensions */
-      ort_status = onnx_state->ort.g_ort->GetDimensions(
-          tensor_info, onnx_state->input_tensors.dim_values[i], dim_count);
-      if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-      {
-        onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-        CleanupOnSetupFailure(&onnx_state);
-        return;
-      }
-    }
-
-    /* The supported trained models use an unknown leading batch extent. The
-    ** interface operates on one state at a time, so that batch is fixed to
-    ** one. Other dynamic extents cannot be sized safely at setup. */
-    /* Calculate the total input numbers for each tensor */
-    size_t total_size = 1; /* batch_size */
-    /* For the input dimensions [] */
-    for (j = 0; j < onnx_state->input_tensors.num_dim[i]; ++j)
-    {
-      /* [-1, feature numbers] */
-      if (onnx_state->input_tensors.dim_values[i][j] <= 0)
-      {
-        /* Only when input_num_dim[i][0] == -1 */
-        if (j != 0 || onnx_state->input_tensors.num_dim[i] == 1)
-        {
-          onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-          status->error = kAlquimiaErrorEngineIntegrity;
-          snprintf(status->message, kAlquimiaMaxStringLength,
-                   "ONNX input tensor '%s' has an unsupported dynamic extent.",
-                   onnx_state->input_tensors.names[i]);
-          CleanupOnSetupFailure(&onnx_state);
-          return;
-        }
-        onnx_state->input_tensors.dim_values[i][j] = 1;
-      }
-      /* Guard
-      ** Check if feature numbers * total size > size_t
-      ** In this case, feature numbers * batch size > size_t
-      */
-      if ((size_t)onnx_state->input_tensors.dim_values[i][j] >
-          SIZE_MAX / total_size)
-      {
-        onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-        status->error = kAlquimiaErrorEngineIntegrity;
-        snprintf(status->message, kAlquimiaMaxStringLength,
-                 "ONNX input tensor '%s' element count overflows size_t.",
-                 onnx_state->input_tensors.names[i]);
-        CleanupOnSetupFailure(&onnx_state);
-        return;
-      }
-      total_size *= (size_t)onnx_state->input_tensors.dim_values[i][j];
-    }
-    onnx_state->input_tensors.total_size[i] = total_size;
-
-    /* allocate memory for the input data */
-    onnx_state->input_tensors.data[i] =
-        (double *)calloc(total_size, sizeof(double));
-    if (onnx_state->input_tensors.data[i] == NULL)
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for input_data.");
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-
-    /* The OrtValue wraps input_data; ONNX Runtime does not own that buffer. */
-    ort_status = onnx_state->ort.g_ort->CreateTensorWithDataAsOrtValue(
-        onnx_state->ort.memory_info, onnx_state->input_tensors.data[i],
-        total_size * sizeof(double), onnx_state->input_tensors.dim_values[i],
-        onnx_state->input_tensors.num_dim[i],
-        ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE,
-        &onnx_state->input_tensors.tensor[i]);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Release the type info */
-    onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-  }
-
-  onnx_state->output_tensors.names =
-      (char **)calloc(num_outputs, sizeof(char *));
-  onnx_state->output_tensors.num_dim =
-      (size_t *)calloc(num_outputs, sizeof(size_t));
-  onnx_state->output_tensors.dim_values =
-      (int64_t **)calloc(num_outputs, sizeof(int64_t *));
-  onnx_state->output_tensors.total_size =
-      (size_t *)calloc(num_outputs, sizeof(size_t));
-  onnx_state->output_tensors.data =
-      (double **)calloc(num_outputs, sizeof(double *));
-  onnx_state->output_tensors.tensor =
-      (OrtValue **)calloc(num_outputs, sizeof(OrtValue *));
-
-  if (onnx_state->output_tensors.names == NULL ||
-      onnx_state->output_tensors.num_dim == NULL ||
-      onnx_state->output_tensors.dim_values == NULL ||
-      onnx_state->output_tensors.total_size == NULL ||
-      onnx_state->output_tensors.data == NULL ||
-      onnx_state->output_tensors.tensor == NULL)
-  {
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for output container arrays.");
-    CleanupOnSetupFailure(&onnx_state);
-    return;
-  }
-
-  /* Parse output names and dimensions */
-  for (i = 0; i < num_outputs; ++i)
-  {
-    char *name = NULL;
-    /* Get the names of the output tensor[i] */
-    ort_status = onnx_state->ort.g_ort->SessionGetOutputName(
-        onnx_state->ort.session, i, onnx_state->ort.allocator, &name);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    onnx_state->output_tensors.names[i] = name;
-
-    OrtTypeInfo *ort_type_info = NULL;  /* Released by ReleaseTypeInfo */
-    ort_status = onnx_state->ort.g_ort->SessionGetOutputTypeInfo(
-        onnx_state->ort.session, i, &ort_type_info);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-
-    const OrtTensorTypeAndShapeInfo *tensor_info = NULL;  /* Do not free this value. It will be valid until ort_type_info is freed */
-    /* Check if the output data type is double */
-    ONNXTensorElementDataType onnx_element_type; /* No need to free. enum */
-    ort_status = onnx_state->ort.g_ort->CastTypeInfoToTensorInfo(
-        ort_type_info, &tensor_info);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Get the output data type */
-    ort_status = onnx_state->ort.g_ort->GetTensorElementType(
-        tensor_info, &onnx_element_type);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Check if the output data type is double (important for geoscience) */
-    if (onnx_element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE)
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "ONNX output tensor '%s' must have double elements.",
-               onnx_state->output_tensors.names[i]);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Record the dimension number */
-    size_t dim_count = 0;
-    /* Get the number of the dimensions */
-    ort_status = onnx_state->ort.g_ort->GetDimensionsCount(
-        tensor_info, &dim_count);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-
-    /* For a scalar:
-    **
-    ** - num_dim = 0
-    ** - dim_values = NULL
-    ** - total_size = 1
-    ** - data[i] holds one double
-    ** - OrtValue *tensor[i] is a valid rank-0 tensor
-
-    ** Before OrtRun, routing writes the scalar to data[i][0]. The OrtValue already
-    ** references that buffer, so inference reads the assigned value directly. Only
-    ** the shape pointer is NULL, indicating rank 0. 
-    */
-    /* Preserve the model rank. A scalar has zero dimensions and keeps the
-    ** NULL dimension array initialized by calloc. */
-    onnx_state->output_tensors.num_dim[i] = dim_count;
-    if (dim_count > 0)
-    {
-      onnx_state->output_tensors.dim_values[i] =
-          (int64_t *)calloc(dim_count, sizeof(int64_t));
-      if (onnx_state->output_tensors.dim_values[i] == NULL)
-      {
-        onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-        status->error = kAlquimiaErrorEngineIntegrity;
-        snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for output_dim_values.");
-        CleanupOnSetupFailure(&onnx_state);
-        return;
-      }
-      /* Get the dimensions */
-      ort_status = onnx_state->ort.g_ort->GetDimensions(
-          tensor_info, onnx_state->output_tensors.dim_values[i], dim_count);
-      if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-      {
-        onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-        CleanupOnSetupFailure(&onnx_state);
-        return;
-      }
-    }
-
-    /* Match the single-state batch convention used for outputs. */
-    /* Calculate the total output numbers for each tensor */
-    size_t total_size = 1; /* batch_size */
-    /* For the output dimensions [] */
-    for (j = 0; j < onnx_state->output_tensors.num_dim[i]; ++j)
-    {
-      /* [-1, feature numbers] */
-      if (onnx_state->output_tensors.dim_values[i][j] <= 0)
-      {
-        /* Only when output_num_dim[i][0] == -1 */
-        if (j != 0 || onnx_state->output_tensors.num_dim[i] == 1)
-        {
-          onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-          status->error = kAlquimiaErrorEngineIntegrity;
-          snprintf(status->message, kAlquimiaMaxStringLength,
-                   "ONNX output tensor '%s' has an unsupported dynamic extent.",
-                   onnx_state->output_tensors.names[i]);
-          CleanupOnSetupFailure(&onnx_state);
-          return;
-        }
-        onnx_state->output_tensors.dim_values[i][j] = 1;
-      }
-      /* Guard
-      ** Check if feature numbers * total size > size_t
-      ** In this case, feature numbers * batch size > size_t
-      */
-      if ((size_t)onnx_state->output_tensors.dim_values[i][j] >
-          SIZE_MAX / total_size)
-      {
-        onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-        status->error = kAlquimiaErrorEngineIntegrity;
-        snprintf(status->message, kAlquimiaMaxStringLength,
-                 "ONNX output tensor '%s' element count overflows size_t.",
-                 onnx_state->output_tensors.names[i]);
-        CleanupOnSetupFailure(&onnx_state);
-        return;
-      }
-      total_size *= (size_t)onnx_state->output_tensors.dim_values[i][j];
-    }
-    onnx_state->output_tensors.total_size[i] = total_size;
-
-    /* allocate memory for the output data */
-    onnx_state->output_tensors.data[i] =
-        (double *)calloc(total_size, sizeof(double));
-    if (onnx_state->output_tensors.data[i] == NULL)
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Memory allocation failed for output_data.");
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-
-    /* The OrtValue wraps output_data; ONNX Runtime does not own that buffer. */
-    ort_status = onnx_state->ort.g_ort->CreateTensorWithDataAsOrtValue(
-        onnx_state->ort.memory_info, onnx_state->output_tensors.data[i],
-        total_size * sizeof(double),
-        onnx_state->output_tensors.dim_values[i],
-        onnx_state->output_tensors.num_dim[i],
-        ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE,
-        &onnx_state->output_tensors.tensor[i]);
-    if (!CheckStatus(onnx_state->ort.g_ort, ort_status, status))
-    {
-      onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    /* Release the type info */
-    onnx_state->ort.g_ort->ReleaseTypeInfo(ort_type_info);
-  }
-
-  /* Every flattened tensor value must have a complete, valid mapping. */
-  for (i = 0; i < onnx_state->input_tensors.num_tensors; ++i)
-  {
-    /* Guard
-    ** avoid total feature inputs > size_t
-    */
-    if (onnx_state->input_tensors.total_size[i] >
-        SIZE_MAX - onnx_state->total_flat_inputs)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Flattened ONNX input element count overflows size_t.");
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    onnx_state->total_flat_inputs += onnx_state->input_tensors.total_size[i];
-  }
-
-  for (i = 0; i < onnx_state->output_tensors.num_tensors; ++i)
-  {
-    /* Guard
-    ** avoid total feature outputs > size_t
-    */
-    if (onnx_state->output_tensors.total_size[i] >
-        SIZE_MAX - onnx_state->total_flat_outputs)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Flattened ONNX output element count overflows size_t.");
-      CleanupOnSetupFailure(&onnx_state);
-      return;
-    }
-    onnx_state->total_flat_outputs +=
-        onnx_state->output_tensors.total_size[i];
-  }
-
-  /* Set up the mapping rules inside the OnnxEngine->mapping struct 
-  ** Initialize AlquimiaSize
-  */
-  if (!BuildConfigMappings(onnx_state, sizes, status) ||
-      // Check if the paired outputs for mobile and immobile exist
+  if (!CheckStatus(api, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING,
+                                       "onnx_alquimia_engine", &ort->env),
+                   status) ||
+      !CheckStatus(api, api->CreateSessionOptions(&ort->session_options),
+                   status) ||
+      !CheckStatus(api, api->CreateSession(ort->env,
+                                           onnx_state->onnx_config.model_path,
+                                           ort->session_options, &ort->session),
+                   status) ||
+      !CheckStatus(api, api->CreateCpuMemoryInfo(OrtArenaAllocator,
+                                                 OrtMemTypeDefault,
+                                                 &ort->memory_info),
+                   status) ||
+      !CheckStatus(api, api->CreateAllocator(ort->session, ort->memory_info,
+                                             &ort->allocator),
+                   status) ||
+      !InspectTensors(ort, true, &onnx_state->input_tensors,
+                      &onnx_state->total_flat_inputs, status) ||
+      !InspectTensors(ort, false, &onnx_state->output_tensors,
+                      &onnx_state->total_flat_outputs, status) ||
+      !BuildConfigMappings(onnx_state, sizes, status) ||
       !BuildPairedOutputLookup(onnx_state, status))
   {
-    CleanupOnSetupFailure(&onnx_state);
-    return;
+    goto fail;
   }
 
   /* Each reaction step mutates the reusable tensors and backing buffers in
@@ -2104,6 +1807,11 @@ void onnx_alquimia_setup(
   functionality->index_base = 0;
 
   *(OnnxEngineState **)onnx_engine_state = onnx_state;
+  return;
+
+fail:
+  /* Shutdown releases whatever was created so far (it skips NULL members). */
+  CleanupOnSetupFailure(&onnx_state);
 }
 
 /**
