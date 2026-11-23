@@ -53,6 +53,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,32 +77,90 @@
 #include "alquimia/onnx_alquimia_config.h"
 
 /* --------------------DATA STRUCTURES USED HERE ONLY ----------------------------*/
-/* Mapping struct for the AlquimiaState*/
+/* AlquimiaState fields that config mappings can name. The order must match
+** kFieldTable below. */
 typedef enum {
-  ALQUIMIA_STRUCT_WATER_DENSITY,                /* state->water_density */
-  ALQUIMIA_STRUCT_POROSITY,                     /* state->porosity */
-  ALQUIMIA_STRUCT_TEMPERATURE,                  /* state->temperature */
-  ALQUIMIA_STRUCT_AQUEOUS_PRESSURE,             /* state->aqueous_pressure */
-  ALQUIMIA_STRUCT_TOTAL_MOBILE,                 /* state->total_mobile.data */
-  ALQUIMIA_STRUCT_TOTAL_IMMOBILE,               /* state->total_immobile.data */
-  ALQUIMIA_TOTAL_MOBILE_IMMOBILE,               /* derived total, mol/L water */
-  ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION,       /* state->mineral_volume_fraction.data */
-  ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA, /* state->mineral_specific_surface_area.data */
-  ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY,         /* state->surface_site_density.data */
-  ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY,     /* state->cation_exchange_capacity.data */
-  ALQUIMIA_STRUCT_GAS_CONCENTRATION             /* state->gas_concentration.data */
-} AlquimiaMappedStruct;
+  kFieldWaterDensity,
+  kFieldPorosity,
+  kFieldTemperature,
+  kFieldAqueousPressure,
+  kFieldTotalMobile,
+  kFieldTotalImmobile,
+  kFieldTotalMobileImmobile,  /* derived: mobile + immobile, mol/L water */
+  kFieldMineralVolumeFraction,
+  kFieldMineralSpecificSurfaceArea,
+  kFieldSurfaceSiteDensity,
+  kFieldCationExchangeCapacity,
+  kFieldGasConcentration,
+  kFieldCount  /* number of fields; keep last */
+} StateField;
+
+/* Marks a table offset that does not apply to a field. */
+#define kNoOffset SIZE_MAX
+
+/* Everything the adapter needs to know about one StateField. */
+typedef struct {
+  const char *name;     /* alquimia_state value used in the JSON config */
+  bool is_scalar;       /* scalar fields require alquimia_state_index 0 */
+  size_t state_offset;  /* double (scalar) or AlquimiaVectorDouble in
+                        ** AlquimiaState; kNoOffset for derived fields */
+  size_t size_offset;   /* int in AlquimiaSizes; kNoOffset for scalars */
+  size_t names_offset;  /* AlquimiaVectorString in AlquimiaProblemMetaData;
+                        ** kNoOffset for scalars. Fields sharing a names
+                        ** vector must share feature names at each index. */
+} FieldInfo;
+
+static const FieldInfo kFieldTable[] = {
+  {"water_density", true, offsetof(AlquimiaState, water_density),
+   kNoOffset, kNoOffset},
+  {"porosity", true, offsetof(AlquimiaState, porosity),
+   kNoOffset, kNoOffset},
+  {"temperature", true, offsetof(AlquimiaState, temperature),
+   kNoOffset, kNoOffset},
+  {"aqueous_pressure", true, offsetof(AlquimiaState, aqueous_pressure),
+   kNoOffset, kNoOffset},
+  {"total_mobile", false, offsetof(AlquimiaState, total_mobile),
+   offsetof(AlquimiaSizes, num_primary),
+   offsetof(AlquimiaProblemMetaData, primary_names)},
+  {"total_immobile", false, offsetof(AlquimiaState, total_immobile),
+   offsetof(AlquimiaSizes, num_sorbed),
+   offsetof(AlquimiaProblemMetaData, primary_names)},
+  /* Also needs num_sorbed; see UpdateSizesForMapping. */
+  {"total_mobile_immobile", false, kNoOffset,
+   offsetof(AlquimiaSizes, num_primary),
+   offsetof(AlquimiaProblemMetaData, primary_names)},
+  {"mineral_volume_fraction", false,
+   offsetof(AlquimiaState, mineral_volume_fraction),
+   offsetof(AlquimiaSizes, num_minerals),
+   offsetof(AlquimiaProblemMetaData, mineral_names)},
+  {"mineral_specific_surface_area", false,
+   offsetof(AlquimiaState, mineral_specific_surface_area),
+   offsetof(AlquimiaSizes, num_minerals),
+   offsetof(AlquimiaProblemMetaData, mineral_names)},
+  {"surface_site_density", false,
+   offsetof(AlquimiaState, surface_site_density),
+   offsetof(AlquimiaSizes, num_surface_sites),
+   offsetof(AlquimiaProblemMetaData, surface_site_names)},
+  {"cation_exchange_capacity", false,
+   offsetof(AlquimiaState, cation_exchange_capacity),
+   offsetof(AlquimiaSizes, num_ion_exchange_sites),
+   offsetof(AlquimiaProblemMetaData, ion_exchange_names)},
+  {"gas_concentration", false, offsetof(AlquimiaState, gas_concentration),
+   offsetof(AlquimiaSizes, num_gases),
+   offsetof(AlquimiaProblemMetaData, gas_names)},
+};
+
+/* Compile-time check that kFieldTable has one entry per StateField. */
+typedef char kFieldTableMatchesEnum[
+    (sizeof(kFieldTable) / sizeof(kFieldTable[0]) == kFieldCount) ? 1 : -1];
 
 typedef struct {
-  /* AlquimiaState mobile, immobile, etc.*/
-  AlquimiaMappedStruct alquimia_state;
-  /* The index for the AlquimiaState.
-  ** Remain 0 for scalar(water_density, porosity, temperature, aqueous_pressure)
-  */
-  /* Align with the alquimia_state */
+  StateField alquimia_state;
+  /* Index into the state vector; always 0 for scalar fields. */
   int alquimia_state_index;
-  /* Adapter-owned feature name retained after the onnx_config is released. */
-  char *feature;
+  /* Points into OnnxEngineState.onnx_config, which lives as long as the
+  ** engine. Not owned. */
+  const char *feature;
 } FeatureMapping;
 
 typedef struct {
@@ -183,120 +242,46 @@ static bool CheckStatus(const OrtApi *g_ort, OrtStatus *status, AlquimiaEngineSt
   return true;
 }
 
-/**
- * @brief Maps an exact onnx_config state-variable name to an AlquimiaState field.
- * @param[in] name Case-sensitive alquimia_state value from the onnx_config.
- * @param[out] alquimia_state Returns the corresponding mapping enum on success and remains
- *        unchanged when @p name is unsupported.
- * @return True when @p name identifies a supported scalar or vector field.
- */
-static bool ParseStructName(const char *name, AlquimiaMappedStruct *alquimia_state) {
-  /* For the vector in the AlquimiaState */
-  if (strcmp(name, "total_mobile") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_TOTAL_MOBILE;
-  } else if (strcmp(name, "total_immobile") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_TOTAL_IMMOBILE;
-  } else if (strcmp(name, "total_mobile_immobile") == 0) {
-    *alquimia_state = ALQUIMIA_TOTAL_MOBILE_IMMOBILE;
-  } else if (strcmp(name, "mineral_volume_fraction") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION;
-  } else if (strcmp(name, "mineral_specific_surface_area") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA;
-  } else if (strcmp(name, "surface_site_density") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY;
-  } else if (strcmp(name, "cation_exchange_capacity") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY;
-  } else if (strcmp(name, "porosity") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_POROSITY;
-  } else if (strcmp(name, "temperature") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_TEMPERATURE;
-  } else if (strcmp(name, "aqueous_pressure") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_AQUEOUS_PRESSURE;
-  } else if (strcmp(name, "water_density") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_WATER_DENSITY;
-  } else if (strcmp(name, "gas_concentration") == 0) {
-    *alquimia_state = ALQUIMIA_STRUCT_GAS_CONCENTRATION;
-  } else {
-    return false;
-  }
-  return true;
-}
-
-/**
- * @brief Identifies mappings whose destination is an AlquimiaState scalar.
- * @param[in] alquimia_state Mapping destination to classify.
- * @return True for scalar state fields, whose required mapping index is zero.
- */
-static bool IsScalarMapping(AlquimiaMappedStruct alquimia_state)
+/* Returns the table entry for a field. */
+static const FieldInfo *FieldInfoFor(StateField field)
 {
-  /* Specifically for the water_density, porosity, temperature, aqueous_pressure */
-  return alquimia_state == ALQUIMIA_STRUCT_WATER_DENSITY ||
-         alquimia_state == ALQUIMIA_STRUCT_POROSITY ||
-         alquimia_state == ALQUIMIA_STRUCT_TEMPERATURE ||
-         alquimia_state == ALQUIMIA_STRUCT_AQUEOUS_PRESSURE;
+  return &kFieldTable[field];
 }
 
-/**
- * @brief Selects the problem-metadata name vector for a state mapping.
- * @param[in] meta_data Problem metadata whose name vectors were allocated from the
- *        model sizes.
- * @param[in] alquimia_state State field associated with a model feature.
- * @return The corresponding name vector, or NULL when the mapped state field
- *         has no name representation in AlquimiaProblemMetaData.
- */
+/* Looks up a config alquimia_state name. Returns false if it is unknown. */
+static bool FindField(const char *name, StateField *field)
+{
+  size_t i;
+  for (i = 0; i < kFieldCount; ++i)
+  {
+    if (strcmp(name, kFieldTable[i].name) == 0)
+    {
+      *field = (StateField)i;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* True when two vector fields write their names to the same metadata vector
+** (e.g. total_mobile and total_immobile both use primary_names). */
+static bool SharesMetadataNames(StateField a, StateField b)
+{
+  return !FieldInfoFor(a)->is_scalar && !FieldInfoFor(b)->is_scalar &&
+         FieldInfoFor(a)->names_offset == FieldInfoFor(b)->names_offset;
+}
+
+/* Returns the metadata name vector for a field, or NULL for scalars. */
 static AlquimiaVectorString *MetadataNamesForMapping(
     AlquimiaProblemMetaData *meta_data,
-    AlquimiaMappedStruct alquimia_state)
+    StateField field)
 {
-  switch (alquimia_state)
+  size_t offset = FieldInfoFor(field)->names_offset;
+  if (offset == kNoOffset)
   {
-  case ALQUIMIA_STRUCT_TOTAL_MOBILE:
-  case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
-    return &meta_data->primary_names;
-  case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
-  case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
-    return &meta_data->mineral_names;
-  case ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY:
-    return &meta_data->surface_site_names;
-  case ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY:
-    return &meta_data->ion_exchange_names;
-  case ALQUIMIA_STRUCT_GAS_CONCENTRATION:
-    return &meta_data->gas_names;
-  default:
     return NULL;
   }
-}
-
-/**
- * @brief Categorizes state fields that share one problem-metadata name vector.
- * @param[in] alquimia_state State destination to classify.
- * @return A stable category identifier, or -1 for scalar fields without names.
- *
- * Mobile and immobile totals share primary_names, and both mineral vectors
- * share mineral_names. Setup rejects different feature names that metadata
- * could not represent independently.
- */
-static int MetadataNameCategory(AlquimiaMappedStruct alquimia_state)
-{
-  switch (alquimia_state)
-  {
-  case ALQUIMIA_STRUCT_TOTAL_MOBILE:
-  case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
-    return 0;
-  case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
-  case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
-    return 1;
-  case ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY:
-    return 2;
-  case ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY:
-    return 3;
-  case ALQUIMIA_STRUCT_GAS_CONCENTRATION:
-    return 4;
-  default:
-    return -1;
-  }
+  return (AlquimiaVectorString *)((char *)meta_data + offset);
 }
 
 /**
@@ -320,34 +305,15 @@ static void StoreMetadataName(
 }
 
 /**
- * @brief Copies a onnx_config feature name into adapter-owned storage.
- * @param[in] name Null-terminated feature name to copy.
- * @return A newly allocated copy, or NULL on allocation failure.
- *
- * The returned string outlives the parsed onnx_config and is released with its
- * runtime mapping array during engine shutdown.
- */
-static char *CopyFeatureName(const char *name)
-{
-  size_t length = strlen(name);
-  char *copy = (char *)malloc(length + 1);
-  if (copy != NULL)
-  {
-    memcpy(copy, name, length + 1);
-  }
-  return copy;
-}
-
-/**
- * @brief Converts one validated onnx_config destination into a runtime mapping.
+ * @brief Converts one config destination into a runtime mapping.
  * @param[in] alquimia_state Case-sensitive AlquimiaState variable name.
- * @param[in] alquimia_state_index Nonnegative state-vector index from the onnx_config.
+ * @param[in] alquimia_state_index Nonnegative state-vector index from the config.
  * @param[out] mapping Returns the runtime destination on success.
  * @param[out] status Returns an engine-integrity error on incompatibility.
  * @return True when the state variable and index can be represented safely.
  *
  * Scalar state variables require index zero. INT_MAX is rejected for vectors
- * so the later size calculation cannot overflow an Alquimia int.
+ * so the later size calculation (index + 1) cannot overflow an int.
  */
 static bool ParseConfigMapping(
     const char *alquimia_state,
@@ -355,8 +321,9 @@ static bool ParseConfigMapping(
     FeatureMapping *mapping,
     AlquimiaEngineStatus *status)
 {
-  /* Parse the AlquimiaState */
-  if (!ParseStructName(alquimia_state, &mapping->alquimia_state))
+  bool is_scalar;
+
+  if (!FindField(alquimia_state, &mapping->alquimia_state))
   {
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength,
@@ -364,14 +331,9 @@ static bool ParseConfigMapping(
              alquimia_state);
     return false;
   }
-  /* Check if it's a valid scalar/vector in the AlquimiaState
-  ** Index = 0 for valid scalar
-  */
-  if ((IsScalarMapping(mapping->alquimia_state) &&
-       alquimia_state_index != 0) ||
-      (!IsScalarMapping(mapping->alquimia_state) &&
-      // Alquimia size = index + 1
-       alquimia_state_index == INT_MAX))
+  is_scalar = FieldInfoFor(mapping->alquimia_state)->is_scalar;
+  if ((is_scalar && alquimia_state_index != 0) ||
+      (!is_scalar && alquimia_state_index == INT_MAX))
   {
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength,
@@ -383,57 +345,39 @@ static bool ParseConfigMapping(
   return true;
 }
 
+/* Raises *size to at least required_size. */
+static void GrowSize(int *size, int required_size)
+{
+  if (*size < required_size)
+  {
+    *size = required_size;
+  }
+}
+
 /**
- * @brief Expands the AlquimiaSizes category required by one mapping.
+ * @brief Expands the AlquimiaSizes entry required by one mapping.
  * @param[in] mapping Validated state destination.
  * @param[in,out] sizes Accumulator initialized to zero before the first mapping.
  *
  * Vector capacity is the highest mapped index plus one. Fields backed by the
- * same Alquimia dimension, notably the two mineral vectors, update one shared
- * size entry.
+ * same Alquimia dimension, such as the two mineral vectors, share one entry.
  */
 static void UpdateSizesForMapping(
     const FeatureMapping *mapping,
     AlquimiaSizes *sizes)
 {
   int required_size = mapping->alquimia_state_index + 1;
-  int *size = NULL;
+  size_t offset = FieldInfoFor(mapping->alquimia_state)->size_offset;
 
-  switch (mapping->alquimia_state)
+  if (offset == kNoOffset)
   {
-  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
-    /* Update the size for mobile and immobile at the same time */
-    if (sizes->num_primary < required_size)
-    {
-      sizes->num_primary = required_size;
-    }
-    size = &sizes->num_sorbed;
-    break;
-  case ALQUIMIA_STRUCT_TOTAL_MOBILE:
-    size = &sizes->num_primary;
-    break;
-  case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-    size = &sizes->num_sorbed;
-    break;
-  case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
-  case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
-    size = &sizes->num_minerals;
-    break;
-  case ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY:
-    size = &sizes->num_surface_sites;
-    break;
-  case ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY:
-    size = &sizes->num_ion_exchange_sites;
-    break;
-  case ALQUIMIA_STRUCT_GAS_CONCENTRATION:
-    size = &sizes->num_gases;
-    break;
-  default:
     return;
   }
-  if (*size < required_size)
+  GrowSize((int *)((char *)sizes + offset), required_size);
+  /* The derived total reads both total_mobile and total_immobile. */
+  if (mapping->alquimia_state == kFieldTotalMobileImmobile)
   {
-    *size = required_size;
+    GrowSize(&sizes->num_sorbed, required_size);
   }
 }
 
@@ -535,20 +479,17 @@ static bool ValidateUniqueFeature(
   {
     if (seen[i] && strcmp(mappings[i].feature, feature) == 0)
     {
-      int meta_name = MetadataNameCategory(mapping->alquimia_state);
       bool same_index =
           mapping->alquimia_state_index == mappings[i].alquimia_state_index;
       bool same_state =
           mapping->alquimia_state == mappings[i].alquimia_state;
 
-      /* 0: mobile, immobile, total_mobile_immobile
-      ** 1: mineral_volume_fraction, mineral_specific_surface_area
-      */
+      /* A name may repeat at the same index across fields that share a
+      ** metadata vector (e.g. total_mobile and total_immobile). */
       if (same_index &&
           ((allow_same_state && same_state) ||
-           ((meta_name == 0 || meta_name == 1) &&
-            meta_name == MetadataNameCategory(mappings[i].alquimia_state) &&
-            !same_state)))
+           (!same_state && SharesMetadataNames(mapping->alquimia_state,
+                                               mappings[i].alquimia_state))))
       {
         continue;
       }
@@ -594,7 +535,7 @@ static bool ResolveConditionMapping(
    * The user must explicitly target the underlying mobile or immobile slots.
    */
   if (item->alquimia_state != NULL &&
-      mapping->alquimia_state == ALQUIMIA_TOTAL_MOBILE_IMMOBILE)
+      mapping->alquimia_state == kFieldTotalMobileImmobile)
   {
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength,
@@ -619,7 +560,7 @@ static bool ResolveConditionMapping(
      * If the user used this shorthand, we MUST block two highly dangerous scenarios:
      */
     if (item->alquimia_state == NULL &&
-        (matched_input != NULL || input->alquimia_state == ALQUIMIA_TOTAL_MOBILE_IMMOBILE))
+        (matched_input != NULL || input->alquimia_state == kFieldTotalMobileImmobile))
     {
       /* 
        * FAILURE SCENARIO 1: `matched_input != NULL` (Duplicate Name Ambiguity)
@@ -629,7 +570,7 @@ static bool ResolveConditionMapping(
        *                   we find the solid "Zn". Since `matched_input != NULL`, we catch the ambiguity.
        * - Why it fails  : The system refuses to blindly guess which "Zn" gets the 0.001.
        * 
-       * FAILURE SCENARIO 2: `... == ALQUIMIA_TOTAL_MOBILE_IMMOBILE` (Derived Quantity Ambiguity)
+       * FAILURE SCENARIO 2: `... == kFieldTotalMobileImmobile` (Derived Quantity Ambiguity)
        * - Model Mapping : Has ONE input named "Zn", defined as TOTAL_MOBILE_IMMOBILE.
        * - JSON Condition: "Zn": 0.001
        * - What happens  : The condition matches, but it hits this rule.
@@ -669,14 +610,13 @@ static bool ResolveConditionMapping(
    * they are not mixing up physical phases (e.g., trying to write a mineral volume 
    * fraction into an aqueous concentration slot).
    * 
-   * Allow flexibility (the requested state doesn't have to perfectly match the 
-   * model's expected state) ONLY IF both states belong to the exact same physical 
-   * metadata (e.g., meta_name 0 = aqueous phase, meta_name 1 = solid/mineral phase).
+   * Allow flexibility (the requested state doesn't have to perfectly match the
+   * model's expected state) ONLY IF both states share a metadata name vector
+   * (e.g. total_mobile/total_immobile, or the two mineral fields).
    */
-  int matched_meta_name = MetadataNameCategory(matched_input->alquimia_state);
   if (mapping->alquimia_state != matched_input->alquimia_state &&
-      !((matched_meta_name == 0 || matched_meta_name == 1) &&
-        matched_meta_name == MetadataNameCategory(mapping->alquimia_state)))
+      !SharesMetadataNames(mapping->alquimia_state,
+                           matched_input->alquimia_state))
   {
     status->error = kAlquimiaErrorEngineIntegrity;
     snprintf(status->message, kAlquimiaMaxStringLength,
@@ -713,9 +653,7 @@ static bool ValidateConsistentFeatureName(
   {
     const FeatureMapping *other = &mappings[i];
     if (seen[i] &&
-        MetadataNameCategory(other->alquimia_state) >= 0 &&
-        MetadataNameCategory(other->alquimia_state) ==
-            MetadataNameCategory(mapping->alquimia_state) &&
+        SharesMetadataNames(other->alquimia_state, mapping->alquimia_state) &&
         other->alquimia_state_index == mapping->alquimia_state_index &&
         strcmp(other->feature, config_mapping->feature) != 0)
     {
@@ -841,16 +779,8 @@ static bool BuildConfigMappings(
       return false;
     }
     /* Copy the feature name */
-    mapping->feature = CopyFeatureName(config_input->feature);
-    if (mapping->feature == NULL)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Memory allocation failed for ONNX input feature name.");
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
+    /* Not copied: onnx_config lives as long as the engine. */
+    mapping->feature = config_input->feature;
     /* Find the input tensor element for the first time */
     input_seen[flat_index] = true;
     /* Update the respective AlquimiaSize when finding new input tensor element */
@@ -900,7 +830,7 @@ static bool BuildConfigMappings(
       return false;
     }
     /* total_mobile_immobile can only be the input alquimia state schema */
-    if (mapping->alquimia_state == ALQUIMIA_TOTAL_MOBILE_IMMOBILE)
+    if (mapping->alquimia_state == kFieldTotalMobileImmobile)
     {
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength,
@@ -936,16 +866,8 @@ static bool BuildConfigMappings(
       free(output_seen);
       return false;
     }
-    mapping->feature = CopyFeatureName(config_output->feature);
-    if (mapping->feature == NULL)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Memory allocation failed for ONNX output feature name.");
-      free(input_seen);
-      free(output_seen);
-      return false;
-    }
+    /* Not copied: onnx_config lives as long as the engine. */
+    mapping->feature = config_output->feature;
     /* Find the output tensor element for the first time */
     output_seen[flat_index] = true;
     /* Update the respective AlquimiaSize when finding new output tensor element */
@@ -1052,12 +974,56 @@ static double WaterVolumePerBulk(
 }
 
 /**
+ * @brief Returns the address of the state value a mapping refers to.
+ * @param[in] state State to address. Not modified here; callers decide.
+ * @param[in] mapping Validated field and zero-based vector index.
+ * @param[in] action "access" or "write", used in the error message.
+ * @param[out] status Returns an engine integrity error for NULL vector
+ *        storage, an out-of-bounds index, or a derived field with no slot.
+ * @return The value's address, or NULL after recording an error.
+ */
+static double *StateSlot(
+    const AlquimiaState *state,
+    FeatureMapping mapping,
+    const char *action,
+    AlquimiaEngineStatus *status)
+{
+  const FieldInfo *info = FieldInfoFor(mapping.alquimia_state);
+  /* One function serves reads and writes, so const is dropped here (like
+  ** strchr); GetAlquimiaValue only reads through the result. */
+  char *base = (char *)state;
+  const AlquimiaVectorDouble *vector;
+  int index = mapping.alquimia_state_index;
+
+  if (info->state_offset == kNoOffset)
+  {
+    status->error = kAlquimiaErrorEngineIntegrity;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Derived field '%s' has no state storage.", info->name);
+    return NULL;
+  }
+  if (info->is_scalar)
+  {
+    return (double *)(base + info->state_offset);
+  }
+  vector = (const AlquimiaVectorDouble *)(base + info->state_offset);
+  if (vector->data == NULL || index < 0 || index >= vector->size)
+  {
+    status->error = kAlquimiaErrorEngineIntegrity;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Out-of-bounds %s %s: index %d, size %d.", info->name, action,
+             index, vector->size);
+    return NULL;
+  }
+  return &vector->data[index];
+}
+
+/**
  * @brief Reads native state units, or derived total concentration in mol/L water.
  * @param[in] state State containing the model input value.
  * @param[in] properties Supplies saturation for total concentration conversion.
- * @param[in] mapping Validated destination field and zero-based vector index.
- * @param[out] status Returns an engine integrity error for an unknown field, NULL
- *        vector storage, or an out-of-bounds vector index.
+ * @param[in] mapping Validated field and zero-based vector index.
+ * @param[out] status Returns an engine integrity error for invalid access.
  * @return The mapped value on success, or 0.0 after recording an error.
  */
 static double GetAlquimiaValue(
@@ -1066,10 +1032,10 @@ static double GetAlquimiaValue(
     FeatureMapping mapping,
     AlquimiaEngineStatus *status)
 {
-  switch (mapping.alquimia_state)
-  {
-  /* Support total = mobile + immobile as the input feature */
-  case ALQUIMIA_TOTAL_MOBILE_IMMOBILE:
+  const double *slot;
+
+  /* Derived total = mobile + immobile, in mol/L water. */
+  if (mapping.alquimia_state == kFieldTotalMobileImmobile)
   {
     double mobile;
     double immobile;
@@ -1079,19 +1045,18 @@ static double GetAlquimiaValue(
     {
       return 0.0;
     }
-    mapping.alquimia_state = ALQUIMIA_STRUCT_TOTAL_MOBILE;
+    mapping.alquimia_state = kFieldTotalMobile;
     mobile = GetAlquimiaValue(state, properties, mapping, status);
     if (status->error != kAlquimiaNoError)
     {
       return 0.0;
     }
-    mapping.alquimia_state = ALQUIMIA_STRUCT_TOTAL_IMMOBILE;
+    mapping.alquimia_state = kFieldTotalImmobile;
     immobile = GetAlquimiaValue(state, properties, mapping, status);
     if (status->error != kAlquimiaNoError)
     {
       return 0.0;
     }
-    /* Unified unit mol/L */
     total = mobile + immobile / water_volume;
     if (!isfinite(total))
     {
@@ -1103,86 +1068,9 @@ static double GetAlquimiaValue(
     }
     return total;
   }
-  case ALQUIMIA_STRUCT_TOTAL_MOBILE:
-    if (state->total_mobile.data == NULL || mapping.alquimia_state_index >= state->total_mobile.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds total_mobile access: index %d, size %d.", mapping.alquimia_state_index, state->total_mobile.size);
-      return 0.0;
-    }
-    return state->total_mobile.data[mapping.alquimia_state_index];
 
-  case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-    if (state->total_immobile.data == NULL || mapping.alquimia_state_index >= state->total_immobile.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds total_immobile access: index %d, size %d.", mapping.alquimia_state_index, state->total_immobile.size);
-      return 0.0;
-    }
-    return state->total_immobile.data[mapping.alquimia_state_index];
-
-  case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
-    if (state->mineral_volume_fraction.data == NULL || mapping.alquimia_state_index >= state->mineral_volume_fraction.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds mineral_volume_fraction access: index %d, size %d.", mapping.alquimia_state_index, state->mineral_volume_fraction.size);
-      return 0.0;
-    }
-    return state->mineral_volume_fraction.data[mapping.alquimia_state_index];
-
-  case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
-    if (state->mineral_specific_surface_area.data == NULL || mapping.alquimia_state_index >= state->mineral_specific_surface_area.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds mineral_specific_surface_area access: index %d, size %d.", mapping.alquimia_state_index, state->mineral_specific_surface_area.size);
-      return 0.0;
-    }
-    return state->mineral_specific_surface_area.data[mapping.alquimia_state_index];
-
-  case ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY:
-    if (state->surface_site_density.data == NULL || mapping.alquimia_state_index >= state->surface_site_density.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds surface_site_density access: index %d, size %d.", mapping.alquimia_state_index, state->surface_site_density.size);
-      return 0.0;
-    }
-    return state->surface_site_density.data[mapping.alquimia_state_index];
-
-  case ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY:
-    if (state->cation_exchange_capacity.data == NULL || mapping.alquimia_state_index >= state->cation_exchange_capacity.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds cation_exchange_capacity access: index %d, size %d.", mapping.alquimia_state_index, state->cation_exchange_capacity.size);
-      return 0.0;
-    }
-    return state->cation_exchange_capacity.data[mapping.alquimia_state_index];
-
-  case ALQUIMIA_STRUCT_POROSITY:
-    return state->porosity;
-
-  case ALQUIMIA_STRUCT_TEMPERATURE:
-    return state->temperature;
-
-  case ALQUIMIA_STRUCT_AQUEOUS_PRESSURE:
-    return state->aqueous_pressure;
-
-  case ALQUIMIA_STRUCT_WATER_DENSITY:
-    return state->water_density;
-
-  case ALQUIMIA_STRUCT_GAS_CONCENTRATION:
-    if (state->gas_concentration.data == NULL || mapping.alquimia_state_index >= state->gas_concentration.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds gas_concentration access: index %d, size %d.", mapping.alquimia_state_index, state->gas_concentration.size);
-      return 0.0;
-    }
-    return state->gas_concentration.data[mapping.alquimia_state_index];
-
-  default:
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Unknown mapped struct type: %d.", mapping.alquimia_state);
-    return 0.0;
-  }
+  slot = StateSlot(state, mapping, "access", status);
+  return slot != NULL ? *slot : 0.0;
 }
 
 /**
@@ -1205,7 +1093,7 @@ static double GetAlquimiaModelInput(
   {
     return 0.0;
   }
-  if (mapping.alquimia_state == ALQUIMIA_STRUCT_TOTAL_IMMOBILE)
+  if (mapping.alquimia_state == kFieldTotalImmobile)
   {
     double water_volume = WaterVolumePerBulk(state->porosity, properties, status);
     if (status->error != kAlquimiaNoError)
@@ -1227,10 +1115,9 @@ static double GetAlquimiaModelInput(
 /**
  * @brief Writes a native-unit value to a mapped AlquimiaState destination.
  * @param[in,out] state State that receives the native-unit value.
- * @param[in] mapping Validated destination field and zero-based vector index.
+ * @param[in] mapping Validated field and zero-based vector index.
  * @param[in] value Value in the destination field's native units.
- * @param[out] status Returns an engine integrity error for an unknown field, NULL
- *        vector storage, or an out-of-bounds vector index.
+ * @param[out] status Returns an engine integrity error for invalid access.
  */
 static void SetAlquimiaValue(
     AlquimiaState *state,
@@ -1238,98 +1125,10 @@ static void SetAlquimiaValue(
     double value,
     AlquimiaEngineStatus *status)
 {
-  switch (mapping.alquimia_state)
+  double *slot = StateSlot(state, mapping, "write", status);
+  if (slot != NULL)
   {
-  case ALQUIMIA_STRUCT_TOTAL_MOBILE:
-    if (state->total_mobile.data == NULL || mapping.alquimia_state_index >= state->total_mobile.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds total_mobile write: index %d, size %d.", mapping.alquimia_state_index, state->total_mobile.size);
-      return;
-    }
-    state->total_mobile.data[mapping.alquimia_state_index] = value;
-    break;
-
-  case ALQUIMIA_STRUCT_TOTAL_IMMOBILE:
-    if (state->total_immobile.data == NULL || mapping.alquimia_state_index >= state->total_immobile.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds total_immobile write: index %d, size %d.", mapping.alquimia_state_index, state->total_immobile.size);
-      return;
-    }
-    state->total_immobile.data[mapping.alquimia_state_index] = value;
-    break;
-
-  case ALQUIMIA_STRUCT_MINERAL_VOLUME_FRACTION:
-    if (state->mineral_volume_fraction.data == NULL || mapping.alquimia_state_index >= state->mineral_volume_fraction.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds mineral_volume_fraction write: index %d, size %d.", mapping.alquimia_state_index, state->mineral_volume_fraction.size);
-      return;
-    }
-    state->mineral_volume_fraction.data[mapping.alquimia_state_index] = value;
-    break;
-
-  case ALQUIMIA_STRUCT_MINERAL_SPECIFIC_SURFACE_AREA:
-    if (state->mineral_specific_surface_area.data == NULL || mapping.alquimia_state_index >= state->mineral_specific_surface_area.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds mineral_specific_surface_area write: index %d, size %d.", mapping.alquimia_state_index, state->mineral_specific_surface_area.size);
-      return;
-    }
-    state->mineral_specific_surface_area.data[mapping.alquimia_state_index] = value;
-    break;
-
-  case ALQUIMIA_STRUCT_SURFACE_SITE_DENSITY:
-    if (state->surface_site_density.data == NULL || mapping.alquimia_state_index >= state->surface_site_density.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds surface_site_density write: index %d, size %d.", mapping.alquimia_state_index, state->surface_site_density.size);
-      return;
-    }
-    state->surface_site_density.data[mapping.alquimia_state_index] = value;
-    break;
-
-  case ALQUIMIA_STRUCT_CATION_EXCHANGE_CAPACITY:
-    if (state->cation_exchange_capacity.data == NULL || mapping.alquimia_state_index >= state->cation_exchange_capacity.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds cation_exchange_capacity write: index %d, size %d.", mapping.alquimia_state_index, state->cation_exchange_capacity.size);
-      return;
-    }
-    state->cation_exchange_capacity.data[mapping.alquimia_state_index] = value;
-    break;
-
-  case ALQUIMIA_STRUCT_POROSITY:
-    state->porosity = value;
-    break;
-
-  case ALQUIMIA_STRUCT_TEMPERATURE:
-    state->temperature = value;
-    break;
-
-  case ALQUIMIA_STRUCT_AQUEOUS_PRESSURE:
-    state->aqueous_pressure = value;
-    break;
-
-  case ALQUIMIA_STRUCT_WATER_DENSITY:
-    state->water_density = value;
-    break;
-
-  case ALQUIMIA_STRUCT_GAS_CONCENTRATION:
-    if (state->gas_concentration.data == NULL || mapping.alquimia_state_index >= state->gas_concentration.size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength, "Out-of-bounds gas_concentration write: index %d, size %d.", mapping.alquimia_state_index, state->gas_concentration.size);
-      return;
-    }
-    state->gas_concentration.data[mapping.alquimia_state_index] = value;
-    break;
-
-  default:
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Unknown mapped struct type: %d.", mapping.alquimia_state);
-    break;
+    *slot = value;
   }
 }
 
@@ -1342,7 +1141,7 @@ static void SetAlquimiaValue(
  */
 static bool HasMappedInput(
     const OnnxEngineState *onnx_state,
-    AlquimiaMappedStruct alquimia_state,
+    StateField alquimia_state,
     int alquimia_state_index)
 {
   size_t i;
@@ -1368,7 +1167,7 @@ static bool HasMappedInput(
  */
 static bool HasMappedOutput(
     const OnnxEngineState *onnx_state,
-    AlquimiaMappedStruct alquimia_state,
+    StateField alquimia_state,
     int alquimia_state_index)
 {
   size_t i;
@@ -1414,22 +1213,22 @@ static bool BuildPairedOutputLookup(
   for (i = 0; i < onnx_state->total_flat_outputs; ++i)
   {
     const FeatureMapping *mapping = &onnx_state->output_mappings[i];
-    AlquimiaMappedStruct paired_state;
+    StateField paired_state;
 
-    if (mapping->alquimia_state == ALQUIMIA_STRUCT_TOTAL_MOBILE)
+    if (mapping->alquimia_state == kFieldTotalMobile)
     {
-      paired_state = ALQUIMIA_STRUCT_TOTAL_IMMOBILE;
+      paired_state = kFieldTotalImmobile;
     }
-    else if (mapping->alquimia_state == ALQUIMIA_STRUCT_TOTAL_IMMOBILE)
+    else if (mapping->alquimia_state == kFieldTotalImmobile)
     {
-      paired_state = ALQUIMIA_STRUCT_TOTAL_MOBILE;
+      paired_state = kFieldTotalMobile;
     }
     else
     {
       continue;
     }
     onnx_state->output_has_paired_mapping[i] =
-        !HasMappedInput(onnx_state, ALQUIMIA_TOTAL_MOBILE_IMMOBILE,
+        !HasMappedInput(onnx_state, kFieldTotalMobileImmobile,
                         mapping->alquimia_state_index) ||
         HasMappedOutput(onnx_state, paired_state,
                         mapping->alquimia_state_index);
@@ -1477,7 +1276,7 @@ static void SetAlquimiaModelOutput(
 
   /* Normalize every immobile output before assignment or conservation,
    * including explicit paired outputs and fields without a mobile counterpart. */
-  if (mapping.alquimia_state == ALQUIMIA_STRUCT_TOTAL_IMMOBILE)
+  if (mapping.alquimia_state == kFieldTotalImmobile)
   {
     new_water_volume = WaterVolumePerBulk(new_porosity, properties, status);
     if (status->error != kAlquimiaNoError)
@@ -1497,9 +1296,9 @@ static void SetAlquimiaModelOutput(
   paired_mapping = mapping;
 
   /* The model runs the inference for mobile */
-  if (mapping.alquimia_state == ALQUIMIA_STRUCT_TOTAL_MOBILE)
+  if (mapping.alquimia_state == kFieldTotalMobile)
   {
-    paired_mapping.alquimia_state = ALQUIMIA_STRUCT_TOTAL_IMMOBILE;
+    paired_mapping.alquimia_state = kFieldTotalImmobile;
 
     /* Invalid immobile */
     if (state->total_immobile.data == NULL || index < 0 ||
@@ -1509,9 +1308,9 @@ static void SetAlquimiaModelOutput(
       return;
     }
   } /* The model runs the inference for immobile */
-  else if (mapping.alquimia_state == ALQUIMIA_STRUCT_TOTAL_IMMOBILE)
+  else if (mapping.alquimia_state == kFieldTotalImmobile)
   {
-    paired_mapping.alquimia_state = ALQUIMIA_STRUCT_TOTAL_MOBILE;
+    paired_mapping.alquimia_state = kFieldTotalMobile;
     if (state->total_mobile.data == NULL || index < 0 ||
         index >= state->total_mobile.size)
     {
@@ -1537,7 +1336,7 @@ static void SetAlquimiaModelOutput(
   {
     return;
   }
-  if (mapping.alquimia_state == ALQUIMIA_STRUCT_TOTAL_MOBILE)
+  if (mapping.alquimia_state == kFieldTotalMobile)
   {
     new_water_volume = WaterVolumePerBulk(new_porosity, properties, status);
     if (status->error != kAlquimiaNoError)
@@ -1556,7 +1355,7 @@ static void SetAlquimiaModelOutput(
     return;
   }
 
-  if (mapping.alquimia_state == ALQUIMIA_STRUCT_TOTAL_MOBILE)
+  if (mapping.alquimia_state == kFieldTotalMobile)
   {
     /* paired_mapping is immobile 
     ** mapping is mobile [molarity]
@@ -2295,11 +2094,11 @@ void onnx_alquimia_setup(
   ** remains safe because each process owns its engine state. */
   functionality->thread_safe = false;
   functionality->temperature_dependent =
-      HasMappedInput(onnx_state, ALQUIMIA_STRUCT_TEMPERATURE, 0);
+      HasMappedInput(onnx_state, kFieldTemperature, 0);
   functionality->pressure_dependent =
-      HasMappedInput(onnx_state, ALQUIMIA_STRUCT_AQUEOUS_PRESSURE, 0);
+      HasMappedInput(onnx_state, kFieldAqueousPressure, 0);
   functionality->porosity_update =
-      HasMappedOutput(onnx_state, ALQUIMIA_STRUCT_POROSITY, 0);
+      HasMappedOutput(onnx_state, kFieldPorosity, 0);
   functionality->operator_splitting = true;
   functionality->global_implicit = false;
   functionality->index_base = 0;
@@ -2323,7 +2122,6 @@ void onnx_alquimia_shutdown(
   /* Input and output tensors are created via independent ORT API calls during setup.
   ** Since there is no strong coupling between them, they are released independently. */
   OnnxEngineState *onnx_state;
-  size_t i;
 
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
@@ -2345,25 +2143,11 @@ void onnx_alquimia_shutdown(
   onnx_state = *(OnnxEngineState **)onnx_engine_state;
   if (onnx_state->ort.g_ort != NULL)
   {
-    /* Release explicit feature mappings if allocated */
-    if (onnx_state->input_mappings != NULL)
-    {
-      for (i = 0; i < onnx_state->total_flat_inputs; ++i)
-      {
-        free(onnx_state->input_mappings[i].feature);
-      }
-      free(onnx_state->input_mappings);
-      onnx_state->input_mappings = NULL;
-    }
-    if (onnx_state->output_mappings != NULL)
-    {
-      for (i = 0; i < onnx_state->total_flat_outputs; ++i)
-      {
-        free(onnx_state->output_mappings[i].feature);
-      }
-      free(onnx_state->output_mappings);
-      onnx_state->output_mappings = NULL;
-    }
+    /* Mapping feature names point into onnx_config (freed below). */
+    free(onnx_state->input_mappings);
+    onnx_state->input_mappings = NULL;
+    free(onnx_state->output_mappings);
+    onnx_state->output_mappings = NULL;
     free(onnx_state->output_has_paired_mapping);
     onnx_state->output_has_paired_mapping = NULL;
 
@@ -2687,7 +2471,7 @@ void onnx_alquimia_reactionstepoperatorsplit(
           return;
         }
         if (onnx_state->output_mappings[flat_index].alquimia_state ==
-            ALQUIMIA_STRUCT_POROSITY)
+            kFieldPorosity)
         {
           new_porosity = value;
         }
