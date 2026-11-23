@@ -4,7 +4,6 @@
 
 #include <limits.h>
 #include <math.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,25 +14,7 @@
 ** only Alquimia-owned structures whose strings remain valid after the parse
 ** tree is deleted. */
 
-/**
- * @brief Copies a fixed error detail when the caller supplied a buffer.
- * @param[out] error_message Destination buffer, which may be NULL.
- * @param[in] error_message_size Size of @p error_message in bytes.
- * @param[in] error_detail Null-terminated error detail.
- */
-static void SetError(char *error_message, size_t error_message_size, const char *error_detail)
-{
-  if (error_message != NULL && error_message_size > 0)
-  {
-    snprintf(error_message, error_message_size, "%s", error_detail);
-  }
-}
-
-/**
- * @brief Creates a C-allocator-owned copy of a parsed JSON string.
- * @param[in] str_value Null-terminated source string owned by cJSON.
- * @return Newly allocated storage, or NULL on allocation failure.
- */
+/* Returns a malloc'd copy of a cJSON-owned string, or NULL. */
 static char *CopyString(const char *str_value)
 {
   size_t length = strlen(str_value);
@@ -45,13 +26,7 @@ static char *CopyString(const char *str_value)
   return copy;
 }
 
-/**
- * @brief Checks a property name against an exact, case-sensitive allowlist.
- * @param[in] name Property name to check.
- * @param[in] allowed_schema_fields Accepted property names.
- * @param[in] num_allowed_schema_fields Number of entries in @p allowed_schema_fields.
- * @return True only for an exact allowlist match.
- */
+/* True when name exactly matches one of the allowed property names. */
 static bool IsAllowedProperty(
     const char *name,
     const char *const *allowed_schema_fields,
@@ -69,55 +44,58 @@ static bool IsAllowedProperty(
 }
 
 /**
- * @brief Rejects unknown and duplicate members in one config object.
- * @param[in] cjson_object cJSON object whose direct children are inspected.
- * @param[in] allowed_schema_fields Exact property allowlist for this object type.
- * @param[in] num_allowed_schema_fields Number of entries in @p allowed_schema_fields.
+ * @brief Rejects bad or duplicate member names in one JSON object.
+ * @param[in] cjson_object Object whose direct members are checked.
+ * @param[in] allowed Fixed schema property names, or NULL for objects whose
+ *        member names are user-defined (conditions, features).
+ * @param[in] num_allowed Number of entries in @p allowed.
  * @param[in] context Human-readable object name used in errors.
  * @param[out] error_message Destination for the first validation error.
  * @param[in] error_message_size Size of @p error_message in bytes.
- * @return True when every member is allowed_schema_fields and appears at most once.
+ * @return True when every name is allowed (or nonempty) and unique.
  *
- * cJSON permits duplicate object keys and lookup returns only one occurrence,
- * so strict validation must traverse the complete child list explicitly.
+ * cJSON accepts duplicate keys and its lookup returns only one of them, so
+ * duplicates are found by scanning the member list.
  */
-static bool ValidateProperties(
+static bool ValidateMembers(
     const cJSON *cjson_object,
-    const char *const *allowed_schema_fields,
-    size_t num_allowed_schema_fields,
+    const char *const *allowed,
+    size_t num_allowed,
     const char *context,
     char *error_message,
     size_t error_message_size)
 {
-  const cJSON *cjson_property;
+  const cJSON *cjson_member;
 
-  cJSON_ArrayForEach(cjson_property, cjson_object)
+  cJSON_ArrayForEach(cjson_member, cjson_object)
   {
+    const char *name = cjson_member->string;
     const cJSON *cjson_other;
 
-    /* Check if the key is empty or not in the allowlist. */
-    if (cjson_property->string == NULL ||
-        !IsAllowedProperty(cjson_property->string, allowed_schema_fields,
-                           num_allowed_schema_fields))
+    if (allowed != NULL &&
+        (name == NULL || !IsAllowedProperty(name, allowed, num_allowed)))
     {
       snprintf(error_message, error_message_size,
-               "Unknown property '%s' in %s.",
-               cjson_property->string == NULL ? "" : cjson_property->string,
+               "Unknown property '%s' in %s.", name == NULL ? "" : name,
                context);
       return false;
     }
-
-    /* Scan subsequent siblings to detect duplicate keys in O(1) space. */
-    for (cjson_other = cjson_property->next;
-         cjson_other != NULL;
+    if (allowed == NULL && (name == NULL || name[0] == '\0'))
+    {
+      snprintf(error_message, error_message_size,
+               "Every name in %s must be nonempty.", context);
+      return false;
+    }
+    for (cjson_other = cjson_member->next; cjson_other != NULL;
          cjson_other = cjson_other->next)
     {
       if (cjson_other->string != NULL &&
-          strcmp(cjson_property->string, cjson_other->string) == 0)
+          strcmp(name, cjson_other->string) == 0)
       {
         snprintf(error_message, error_message_size,
-                 "Duplicate property '%s' in %s.",
-                 cjson_property->string, context);
+                 allowed != NULL ? "Duplicate property '%s' in %s."
+                                 : "Duplicate name '%s' in %s.",
+                 name, context);
         return false;
       }
     }
@@ -157,7 +135,7 @@ static bool GetRequiredString(
   *str_value = CopyString(cjson_item->valuestring);
   if (*str_value == NULL)
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "Memory allocation failed while loading ONNX config.");
     return false;
   }
@@ -218,43 +196,29 @@ static bool ResolveModelPath(
     char *error_message,
     size_t error_message_size)
 {
-  /* A pointer points to the last '/' */
   const char *last_separator;
   size_t directory_length;
   size_t model_length = strlen(model);
 
-  /* Absolute path /usr/... */
   if (model[0] == '/')
   {
     *model_path = CopyString(model);
   }
-  /* relative path models/.onnx */
   else
   {
-    /* Find the last '/' */
     last_separator = strrchr(config_path, '/');
-    /* Get the length of the directory inclding the last '/' */
     directory_length = last_separator == NULL ? 0 : (size_t)(last_separator - config_path) + 1;
-    /* Check if the path exceeds the size_t */
-    if (directory_length > SIZE_MAX - model_length - 1)
-    {
-      SetError(error_message, error_message_size,
-               "Resolved ONNX model path is too long.");
-      return false;
-    }
     *model_path = (char *)malloc(directory_length + model_length + 1);
     if (*model_path != NULL)
     {
-      /* Copy the directory path prefix. */
       memcpy(*model_path, config_path, directory_length);
-      /* Append the model filename (including the null terminator). */
       memcpy(*model_path + directory_length, model, model_length + 1);
     }
   }
 
   if (*model_path == NULL)
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "Memory allocation failed while resolving ONNX model path.");
     return false;
   }
@@ -290,124 +254,50 @@ static bool ParseMappings(
   char mapping_context[32];
   cJSON *cjson_item;
   size_t i = 0;
-  /* In cJSON API, Array is key:[key : value,key : value,...]*/
-  /* inputs:[
-  ** {  tensor: ... },
-  ** {  tensor: ... }
-  ** ] */
   int count = cJSON_GetArraySize(cjson_array);
 
   snprintf(mapping_context, sizeof(mapping_context), "%s mapping", mapping_role);
-  if (count < 0 || (size_t)count > SIZE_MAX / sizeof(**mappings))
-  {
-    if (error_message != NULL && error_message_size > 0)
-    {
-      snprintf(error_message, error_message_size,
-               "ONNX config %s mapping array is too large.", mapping_role);
-    }
-    return false;
-  }
   *num_mappings = (size_t)count;
   if (count > 0)
   {
-    *mappings = (OnnxAlquimiaMapping *)calloc(
-        (size_t)count, sizeof(**mappings));
+    *mappings = (OnnxAlquimiaMapping *)calloc((size_t)count, sizeof(**mappings));
     if (*mappings == NULL)
     {
-      if (error_message != NULL && error_message_size > 0)
-      {
-        snprintf(error_message, error_message_size,
-                 "Memory allocation failed for ONNX %s mappings.",
-                 mapping_role);
-      }
+      snprintf(error_message, error_message_size,
+               "Memory allocation failed for ONNX %s mappings.", mapping_role);
       return false;
     }
   }
-  /* Traverse all the items */
   cJSON_ArrayForEach(cjson_item, cjson_array)
   {
     int tensor_element_index;
     OnnxAlquimiaMapping *mapping = &(*mappings)[i];
-    if (!cJSON_IsObject(cjson_item) ||
-        !ValidateProperties(cjson_item, allowed_schema_fields, 5,
-                            mapping_context,
-                            error_message, error_message_size) ||
+    if (!cJSON_IsObject(cjson_item))
+    {
+      snprintf(error_message, error_message_size,
+               "Every ONNX %s mapping must be an object.", mapping_role);
+      return false;
+    }
+    if (!ValidateMembers(cjson_item, allowed_schema_fields, 5, mapping_context,
+                         error_message, error_message_size) ||
         !GetRequiredString(cjson_item, "tensor", mapping_context,
-                           &mapping->tensor,
-                           error_message, error_message_size) ||
+                           &mapping->tensor, error_message, error_message_size) ||
         !GetRequiredInteger(cjson_item, "tensor_element_index", mapping_context,
                             &tensor_element_index, error_message,
                             error_message_size) ||
         !GetRequiredString(cjson_item, "feature", mapping_context,
-                           &mapping->feature,
-                           error_message, error_message_size) ||
+                           &mapping->feature, error_message, error_message_size) ||
         !GetRequiredString(cjson_item, "alquimia_state", mapping_context,
-                           &mapping->alquimia_state,
-                           error_message, error_message_size) ||
+                           &mapping->alquimia_state, error_message,
+                           error_message_size) ||
         !GetRequiredInteger(cjson_item, "alquimia_state_index", mapping_context,
-                            &mapping->alquimia_state_index,
-                            error_message, error_message_size))
+                            &mapping->alquimia_state_index, error_message,
+                            error_message_size))
     {
-      if (!cJSON_IsObject(cjson_item))
-      {
-        if (error_message != NULL && error_message_size > 0)
-        {
-          snprintf(error_message, error_message_size,
-                   "Every ONNX %s mapping must be an object.", mapping_role);
-        }
-      }
       return false;
     }
     mapping->tensor_element_index = (size_t)tensor_element_index;
     ++i;
-  }
-  return true;
-}
-
-/**
- * @brief Rejects empty or duplicate arbitrary member names in an object.
- * @param[in] cjson_object Object whose direct members are checked.
- * @param[in] context Human-readable object name used in errors.
- * @param[out] error_message Destination for the first validation error.
- * @param[in] error_message_size Size of @p error_message in bytes.
- * @return True when every direct member has a unique, nonempty name.
- *
- * Condition and feature names are user-defined, so they cannot use the fixed
- * schema allowlist enforced by ValidateProperties.
- */
-static bool ValidateUniqueMember(
-    const cJSON *cjson_object,
-    const char *context,
-    char *error_message,
-    size_t error_message_size)
-{
-  const cJSON *cjson_property;
-
-  // Traverse the cjson_object(loop, O(N^2))
-  cJSON_ArrayForEach(cjson_property, cjson_object)
-  {
-    const cJSON *cjson_other;
-    if (cjson_property->string == NULL || cjson_property->string[0] == '\0')
-    {
-      snprintf(error_message, error_message_size,
-               "Every name in %s must be nonempty.", context);
-      return false;
-    }
-    // Find the duplicate element
-    // Similar with the Linked List
-    for (cjson_other = cjson_property->next;
-         cjson_other != NULL;
-         cjson_other = cjson_other->next)
-    {
-      if (cjson_other->string != NULL &&
-          strcmp(cjson_property->string, cjson_other->string) == 0)
-      {
-        snprintf(error_message, error_message_size,
-                 "Duplicate name '%s' in %s.",
-                 cjson_property->string, context);
-        return false;
-      }
-    }
   }
   return true;
 }
@@ -478,53 +368,29 @@ static bool ParseConditions(
 {
   const cJSON *cjson_condition;
   size_t condition_index = 0;
-  // Record the numbers of conditions
   int condition_count;
 
-  // Driver could provide the condition
   if (cjson_conditions == NULL)
   {
     return true;
   }
   
-  // "conditions" is an object
-  /* "conditions": {
-    "initial": {
-      "Mineral_source": 7,
-      "uranium_total": -6.677780705266080,
-      "Site_Density": -4.54327863489071,
-      "U_species1": -25.419000000000000,
-      "U_species8": -22.514000000000000,
-      "U_species14": -37.488999999999997,
-      "U_species20": -20.510000000000002
-    }
-  } */
+  /* "conditions": {"<name>": {"<feature>": <number>, or
+  **                            "<feature>": {"<state field>": <number>, ...}}} */
   if (!cJSON_IsObject(cjson_conditions))
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "ONNX config conditions must be an object.");
     return false;
   }
-  // Validate the name such as "initial"
-  if (!ValidateUniqueMember(cjson_conditions, "conditions",
+  if (!ValidateMembers(cjson_conditions, NULL, 0, "conditions",
                             error_message, error_message_size))
   {
     return false;
   } 
 
-  // Can be used for object/array
   condition_count = cJSON_GetArraySize(cjson_conditions);
 
-  // Check the edge
-  if (condition_count < 0 ||
-    // Check if total conditions exceed the boundary
-      (size_t)condition_count >
-          SIZE_MAX / sizeof(*onnx_config->conditions))
-  {
-    SetError(error_message, error_message_size,
-             "ONNX config conditions object is too large.");
-    return false;
-  }
   onnx_config->num_conditions = (size_t)condition_count;
   if (condition_count > 0)
   {
@@ -532,14 +398,12 @@ static bool ParseConditions(
         (size_t)condition_count, sizeof(*onnx_config->conditions));
     if (onnx_config->conditions == NULL)
     {
-      SetError(error_message, error_message_size,
+      snprintf(error_message, error_message_size,
                "Memory allocation failed for ONNX conditions.");
       return false;
     }
   }
 
-  // Traverse the members of conditions
-  // "initial" or other names...
   cJSON_ArrayForEach(cjson_condition, cjson_conditions)
   {
     OnnxAlquimiaCondition *condition =
@@ -551,12 +415,11 @@ static bool ParseConditions(
     condition->name = CopyString(cjson_condition->string);
     if (condition->name == NULL)
     {
-      SetError(error_message, error_message_size,
+      snprintf(error_message, error_message_size,
                "Memory allocation failed for an ONNX condition name.");
       return false;
     }
 
-    // The member of "conditions" should be an object
     if (!cJSON_IsObject(cjson_condition))
     {
       snprintf(error_message, error_message_size,
@@ -564,8 +427,7 @@ static bool ParseConditions(
       return false;
     }
 
-    // Validate the elements like "Mineral_source"
-    if (!ValidateUniqueMember(cjson_condition, "condition feature values",
+    if (!ValidateMembers(cjson_condition, NULL, 0, "condition feature values",
                               error_message, error_message_size))
     {
       return false;
@@ -577,7 +439,7 @@ static bool ParseConditions(
       size_t count = 1;
       if (cJSON_IsObject(cjson_item))
       {
-        if (!ValidateUniqueMember(cjson_item, "condition fields",
+        if (!ValidateMembers(cjson_item, NULL, 0, "condition fields",
                                   error_message, error_message_size))
         {
           return false;
@@ -591,13 +453,6 @@ static bool ParseConditions(
           return false;
         }
       }
-      /* Prevent overflow */
-      if (count > SIZE_MAX / sizeof(*condition->items) - item_count)
-      {
-        SetError(error_message, error_message_size,
-                 "ONNX condition has too many field values.");
-        return false;
-      }
       item_count += count;
     }
     condition->num_items = item_count;
@@ -607,22 +462,15 @@ static bool ParseConditions(
           (size_t)item_count, sizeof(*condition->items));
       if (condition->items == NULL)
       {
-        SetError(error_message, error_message_size,
+        snprintf(error_message, error_message_size,
                  "Memory allocation failed for ONNX condition values.");
         return false;
       }
     }
-    // Traverse the members of the condition
     cJSON_ArrayForEach(cjson_item, cjson_condition)
     {
-      /* nested only for mobile and immobile,
-      ** mineral_volume_fraction and mineral_specific_surface_area
-      ** conditions with one metadata name shared by two features
-      ** eg. "Zn":{
-      **   "total_immobile": 70,
-      **   "total_mobile": 80
-      ** }
-      */
+      /* Nested form names the state field(s) explicitly, e.g.
+      ** "Zn": {"total_mobile": 80, "total_immobile": 70}. */
       bool nested = cJSON_IsObject(cjson_item);
       const cJSON *value = nested ? cjson_item->child : cjson_item;
       do
@@ -642,7 +490,7 @@ static bool ParseConditions(
         }
         if (item->feature == NULL || (nested && item->alquimia_state == NULL))
         {
-          SetError(error_message, error_message_size,
+          snprintf(error_message, error_message_size,
                    "Memory allocation failed for an ONNX condition field.");
           return false;
         }
@@ -654,7 +502,6 @@ static bool ParseConditions(
     ++condition_index;
   }
 
-  // Validate the features in the JSON 
   return ValidateConditionFeature(
       onnx_config, error_message, error_message_size);
 }
@@ -679,16 +526,14 @@ static bool ReadConfigJsonContents(
     char *error_message,
     size_t error_message_size)
 {
-  /* Opened file handle for the config JSON. */
   FILE *file;
-  /* Number of bytes of the file */
   long file_size;
   size_t bytes_read;
 
   *json_contents = NULL;
   *file_length = 0;
   file = fopen(config_path, "rb");
-  /* Open the file and determine its size by seeking, resetting the pointer afterward. */
+  /* Size the buffer by seeking to the end. */
   if (file == NULL || fseek(file, 0, SEEK_END) != 0 ||
       (file_size = ftell(file)) < 0 || fseek(file, 0, SEEK_SET) != 0)
   {
@@ -700,36 +545,22 @@ static bool ReadConfigJsonContents(
              "Unable to read ONNX config: %s", config_path);
     return false;
   }
-  /* Check if the file size exceeds the size_t */
-  if ((unsigned long)file_size > SIZE_MAX - 1)
-  {
-    fclose(file);
-    SetError(error_message, error_message_size,
-             "ONNX config file is too large.");
-    return false;
-  }
 
   *json_contents = (char *)malloc((size_t)file_size + 1);
   if (*json_contents == NULL)
   {
     fclose(file);
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "Memory allocation failed while reading ONNX config.");
     return false;
   }
-  /* Number of bytes read from the JSON file. */
-  /*  Returns the number of full items read. 
-  ** This number may be less than count 
-  ** if an error occurs or the end of the file is reached.
-  */
   bytes_read = fread(*json_contents, 1, (size_t)file_size, file);
   fclose(file);
-  /* Check if errors occur during reading JSON */
   if (bytes_read != (size_t)file_size)
   {
     free(*json_contents);
     *json_contents = NULL;
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "Failed to read the complete ONNX config.");
     return false;
   }
@@ -755,7 +586,6 @@ static bool PopulateConfig(
     char *error_message,
     size_t error_message_size)
 {
-  /* The allowed keys in the first layer */
   static const char *const allowed_schema_fields[] = {
       "schema_version", "model", "conditions", "inputs", "outputs"};
   const cJSON *cjson_schema_version;
@@ -763,18 +593,13 @@ static bool PopulateConfig(
   const cJSON *cjson_conditions;
   const cJSON *cjson_inputs;
   const cJSON *cjson_outputs;
-  /* cJSON structure reference:
-  ** - Object: { "key": value }
-  ** - Array:  [ value, value ], for the value inside []: "key":value
-  */
   if (!cJSON_IsObject(cjson_root))
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "ONNX config root must be an object.");
     return false;
   }
-  /* Check duplicate keys */
-  if (!ValidateProperties(cjson_root, allowed_schema_fields, 5, "config root",
+  if (!ValidateMembers(cjson_root, allowed_schema_fields, 5, "config root",
                           error_message, error_message_size))
   {
     return false;
@@ -785,23 +610,22 @@ static bool PopulateConfig(
   cjson_conditions = cJSON_GetObjectItemCaseSensitive(cjson_root, "conditions");
   cjson_inputs = cJSON_GetObjectItemCaseSensitive(cjson_root, "inputs");
   cjson_outputs = cJSON_GetObjectItemCaseSensitive(cjson_root, "outputs");
-  /* In cJSON API, there is only double value */
   if (!cJSON_IsNumber(cjson_schema_version) || cjson_schema_version->valuedouble != 1.0)
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "ONNX config schema_version must be integer 1.");
     return false;
   }
   if (!cJSON_IsString(cjson_model) || cjson_model->valuestring == NULL ||
       cjson_model->valuestring[0] == '\0')
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "ONNX config model must be a nonempty string.");
     return false;
   }
   if (!cJSON_IsArray(cjson_inputs) || !cJSON_IsArray(cjson_outputs))
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "ONNX config inputs and outputs must be arrays.");
     return false;
   }
@@ -819,11 +643,7 @@ static bool PopulateConfig(
                          error_message_size);
 }
 
-/**
- * @brief Releases an input or output mapping array and its owned strings.
- * @param[in,out] mappings Mapping array to release, which may be NULL.
- * @param[in] num_mappings Number of entries in @p mappings.
- */
+/* Frees a mapping array (may be NULL) and its strings. */
 static void FreeMappings(
     OnnxAlquimiaMapping *mappings,
     size_t num_mappings)
@@ -890,8 +710,6 @@ bool OnnxAlquimiaLoadConfig(
     char *error_message,
     size_t error_message_size)
 {
-  /* The onnx_alquimia_config checks the duplicate keys */
-  /* onnx_alquimia_interface checks the duplicate values */
   char *json_contents = NULL;
   size_t bytes_read;
   const char *parse_end = NULL;
@@ -899,11 +717,9 @@ bool OnnxAlquimiaLoadConfig(
   bool success;
 
   memset(onnx_config, 0, sizeof(*onnx_config));
-  /* Check if the JSON path is valid (null/empty)*/
   if (config_path == NULL || config_path[0] == '\0')
   {
-    /* Set up the error message for the AlquimiaEngineStatus: status */
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "ONNX config file path not provided.");
     return false;
   }
@@ -920,7 +736,7 @@ bool OnnxAlquimiaLoadConfig(
   if (cjson_root == NULL || parse_end == NULL ||
       (size_t)(parse_end - json_contents) != bytes_read)
   {
-    SetError(error_message, error_message_size,
+    snprintf(error_message, error_message_size,
              "ONNX config is not valid strict JSON.");
     cJSON_Delete(cjson_root);
     free(json_contents);

@@ -163,32 +163,19 @@ typedef struct {
   const char *feature;
 } FeatureMapping;
 
+/* The model's input or output tensors, in session order. */
 typedef struct {
-  /* Dynamic input/output info */
-  /* Align with the num_inputs/outputs in onnx_config */
   size_t num_tensors;
-  /* Align with the tensor in onnx_config */
-  char **names;
-  /* Number of dimensions for each input/output tensor
-  ** 0 for a scalar tensor
-  */
-  size_t *num_dim;
-  /* [batch size, input/output features] / [input/output features]
-  ** batch size == -1 means it's dynamic
-  ** Considering the architecture of Alquimia, batch size = 1
-  */
-  int64_t **dim_values; 
-  /* Each input/output tensor has their own size */
-  size_t *total_size; 
-  /* The real numbers for each input/output tensor. */
-  double **data;
+  char **names;          /* allocated by the session allocator */
+  size_t *num_dim;       /* 0 for a scalar tensor */
+  int64_t **dim_values;  /* dynamic batch extent fixed to 1; NULL for scalars */
+  size_t *total_size;    /* elements per tensor */
+  double **data;         /* buffers wrapped by tensor[] */
   OrtValue **tensor;
 } OrtTensor;
 
 typedef struct {
-  /* OnnxRuntime API */
-  /* Const pointer to the global OrtApi function table. Do NOT release. */
-  const OrtApi *g_ort;
+  const OrtApi *g_ort;  /* global function table; never released */
   OrtEnv *env;
   OrtSessionOptions *session_options;
   OrtSession *session;
@@ -203,7 +190,7 @@ typedef struct {
   /* Selects JSON-backed initialization instead of driver constraints. */
   bool hands_off;
 
-  /* Flatten non-sequential input/output tensors into 1-dimensional arrays. */
+  /* Element counts over all input / output tensors, flattened in order. */
   size_t total_flat_inputs;
   size_t total_flat_outputs;
 
@@ -218,19 +205,10 @@ typedef struct {
 
 /* ------------- HELPER and ONNX-RELATED FUNCTIONS USED HERE ONLY -----------------*/
 
-/**
- * @brief Converts an ONNX Runtime status into an Alquimia engine status.
- * @param[in] g_ort ONNX Runtime API used to inspect and release @p status.
- * @param[in] status ONNX status returned by an API call; NULL indicates success.
- * @param[in,out] alquimia_status Destination for the translated error and message.
- * @return True on success. On failure, releases @p status, records an engine
- *         integrity error, and returns false.
- */
+/* Returns true for a NULL (success) OrtStatus. Otherwise records the ONNX
+** Runtime error in alquimia_status, releases the OrtStatus, returns false. */
 static bool CheckStatus(const OrtApi *g_ort, OrtStatus *status, AlquimiaEngineStatus *alquimia_status)
 {
-  /* A non-NULL OrtStatus indicates an API failure; extract the error, 
-  ** populate our status, and explicitly release the status object. 
-  */
   if (status != NULL)
   {
     const char *msg = g_ort->GetErrorMessage(status);
@@ -240,6 +218,23 @@ static bool CheckStatus(const OrtApi *g_ort, OrtStatus *status, AlquimiaEngineSt
     return false;
   }
   return true;
+}
+
+/* Returns the engine behind an engine-state handle, or NULL after recording
+** an invalid-engine error (e.g. Shutdown called after a failed Setup). */
+static OnnxEngineState *EngineFromHandle(
+    void *onnx_engine_state,
+    const char *caller,
+    AlquimiaEngineStatus *status)
+{
+  if (onnx_engine_state == NULL || *(OnnxEngineState **)onnx_engine_state == NULL)
+  {
+    status->error = kAlquimiaErrorInvalidEngine;
+    snprintf(status->message, kAlquimiaMaxStringLength,
+             "Invalid ONNX engine state pointer in %s.", caller);
+    return NULL;
+  }
+  return *(OnnxEngineState **)onnx_engine_state;
 }
 
 /* Returns the table entry for a field. */
@@ -284,12 +279,7 @@ static AlquimiaVectorString *MetadataNamesForMapping(
   return (AlquimiaVectorString *)((char *)meta_data + offset);
 }
 
-/**
- * @brief Copies a config feature name into an allocated Alquimia name vector.
- * @param[in,out] names Destination name vector.
- * @param[in] index Zero-based destination index.
- * @param[in] value Null-terminated feature name to copy.
- */
+/* Copies a feature name into names->data[index], if that slot exists. */
 static void StoreMetadataName(
     AlquimiaVectorString *names,
     int index,
@@ -381,20 +371,10 @@ static void UpdateSizesForMapping(
   }
 }
 
-/**
- * @brief Resolves a tensor element index to the flat runtime mapping index.
- * @param[in] tensor Case-sensitive tensor name from the onnx_config.
- * @param[in] tensor_element_index Zero-based flattened index within that tensor.
- * @param[in] num_tensors Number of model tensors in @p names and @p tensor_sizes.
- * @param[in] names ONNX Runtime tensor names in session order.
- * @param[in] tensor_sizes Flattened element counts in session order.
- * @param[out] flat_index Returns the offset into the combined mapping array.
- * @param[out] status Returns an error for unknown, duplicate, or undersized tensors.
- * @return True when exactly one tensor matches and the index is in range.
- *
- * Reaction steps iterate tensors in session order, so this same prefix-sum
- * layout must be used while constructing the mapping arrays.
- */
+/* Converts (tensor name, element index) to an index into the flat mapping
+** array: tensors are laid out one after another in session order, the same
+** order the reaction step walks them. Fails for an unknown or duplicate
+** tensor name, or an element index past the tensor's size. */
 static bool FindFlatTensorElement(
     const char *tensor,
     size_t tensor_element_index,
@@ -406,15 +386,12 @@ static bool FindFlatTensorElement(
 {
   size_t i;
   size_t offset = 0;
-  /* Initialize sentinel value to track if the target tensor is found. */
-  size_t matching_index = num_tensors;
+  size_t matching_index = num_tensors;  /* num_tensors means "not found" */
 
-  /* Check if there duplicate values in JSON */
   for (i = 0; i < num_tensors; ++i)
   {
     if (strcmp(tensor, names[i]) == 0)
     {
-      /* If matching_index was already set, a duplicate name exists. */
       if (matching_index != num_tensors)
       {
         status->error = kAlquimiaErrorEngineIntegrity;
@@ -422,15 +399,11 @@ static bool FindFlatTensorElement(
                  "ONNX model contains duplicate tensor name '%s'.", tensor);
         return false;
       }
-      /* Find the tensor customized_tensor_element[0] for the first time */
       matching_index = i;
-      /* Calculate the absolute flattened index for this specific element. */
       *flat_index = offset + tensor_element_index;
     }
-    /* Accumulate tensor offset to track the starting bound of subsequent tensors. */
     offset += tensor_sizes[i];
   }
-  /* Reject unknown tensors not present in the model metadata. */
   if (matching_index == num_tensors)
   {
     status->error = kAlquimiaErrorEngineIntegrity;
@@ -438,7 +411,6 @@ static bool FindFlatTensorElement(
              "ONNX config references unknown tensor '%s'.", tensor);
     return false;
   }
-  /* Guard against out-of-bounds element indexing within the matched tensor. */
   if (tensor_element_index >= tensor_sizes[matching_index])
   {
     status->error = kAlquimiaErrorEngineIntegrity;
@@ -520,12 +492,23 @@ static bool ValidateFeatureNames(
 }
 
 /**
- * @brief Resolves condition destinations independently of the model's input fields.
- * @param[in] onnx_state Inspected model state and destination for runtime mappings.
- * @param[in] item Candidate JSON condition item to resolve.
- * @param[out] mapping Resolved destination mapping. A NULL feature denotes an ignored extra feature.
- * @param[out] status Returns an engine-integrity error for invalid or incompatible fields.
- * @return True when the condition is successfully resolved or safely ignored.
+ * @brief Resolves where a condition value is written, using the model inputs.
+ * @param[in] onnx_state Engine with complete input mappings.
+ * @param[in] item Condition item: feature name, optional state field, value.
+ * @param[out] mapping Destination; mapping->feature is NULL when the model
+ *        does not read this feature and the item should be ignored.
+ * @param[out] status Returns an engine-integrity error for invalid items.
+ * @return True when resolved or ignored.
+ *
+ * Rules:
+ * - total_mobile_immobile is derived, so it can't be set directly; set
+ *   total_mobile and/or total_immobile instead.
+ * - A bare number (no state field) is only accepted when the name matches
+ *   exactly one input and that input is not total_mobile_immobile; otherwise
+ *   the split between fields would be a guess.
+ * - An explicit field must be the input's field or share its metadata
+ *   vector (e.g. total_immobile for a total_mobile input); the index is
+ *   taken from the input.
  */
 static bool ResolveConditionMapping(
     const OnnxEngineState *onnx_state,
@@ -541,16 +524,6 @@ static bool ResolveConditionMapping(
   {
     return false;
   }
-
-  /* 
-   * Reject explicit initialization of a derived total.
-   * 
-   * You cannot directly assign a value to 'total_mobile_immobile' because it is a 
-   * derived sum, not a fundamental storage slot. If a single total value is provided, 
-   * the system cannot arbitrarily guess how to partition that mass between the 
-   * fluid phase (total_mobile) and the solid phase (total_immobile).
-   * The user must explicitly target the underlying mobile or immobile slots.
-   */
   if (item->alquimia_state != NULL &&
       mapping->alquimia_state == kFieldTotalMobileImmobile)
   {
@@ -563,74 +536,30 @@ static bool ResolveConditionMapping(
   for (i = 0; i < onnx_state->total_flat_inputs; ++i)
   {
     const FeatureMapping *input = &onnx_state->input_mappings[i];
-    /* Skip if the model input name (e.g., "H+") doesn't match the JSON item name (e.g., "Zn"). */
     if (strcmp(input->feature, item->feature) != 0)
     {
       continue;
     }
-
-    /* 
-     * DEFENSE AGAINST AMBIGUOUS SCALAR SHORTHAND
-     * `item->alquimia_state == NULL` means the JSON provided a bare number without 
-     * a physical state label. (e.g., JSON has `"Zn": 0.001` instead of `"Zn": {"total_mobile": 0.001}`)
-     * 
-     * If the user used this shorthand, we MUST block two highly dangerous scenarios:
-     */
+    /* Bare number for a repeated name or a derived total: ambiguous. */
     if (item->alquimia_state == NULL &&
         (matched_input != NULL || input->alquimia_state == kFieldTotalMobileImmobile))
     {
-      /* 
-       * FAILURE SCENARIO 1: `matched_input != NULL` (Duplicate Name Ambiguity)
-       * - Model Mapping : Has TWO inputs named "Zn" (e.g., Index 0 is aqueous, Index 1 is solid).
-       * - JSON Condition: "Zn": 0.001
-       * - What happens  : On the first loop, `matched_input` becomes the aqueous "Zn". On the second loop, 
-       *                   we find the solid "Zn". Since `matched_input != NULL`, we catch the ambiguity.
-       * - Why it fails  : The system refuses to blindly guess which "Zn" gets the 0.001.
-       * 
-       * FAILURE SCENARIO 2: `... == kFieldTotalMobileImmobile` (Derived Quantity Ambiguity)
-       * - Model Mapping : Has ONE input named "Zn", defined as TOTAL_MOBILE_IMMOBILE.
-       * - JSON Condition: "Zn": 0.001
-       * - What happens  : The condition matches, but it hits this rule.
-       * - Why it fails  : You cannot write directly to a "Total". The system needs to know 
-       *                   how to split that 0.001 into the underlying mobile/immobile arrays.
-       * 
-       * THE FIX FOR BOTH: The user is forced to write explicit JSON:
-       * "Zn": { "total_mobile": 0.001 }
-       */
       status->error = kAlquimiaErrorEngineIntegrity;
       snprintf(status->message, kAlquimiaMaxStringLength,
                "Condition feature '%s' requires explicit state fields.", item->feature);
       return false;
     }
-    /* Record the safe match. If the loop finds another input with the exact same name, 
-     * this `matched_input` variable will trigger Failure Scenario 1. */
     matched_input = input;
   }
-  /* If the JSON feature does not exist in the ONNX model, safely ignore it. */
   if (matched_input == NULL)
   {
-    return true;
+    return true;  /* the model does not read this feature */
   }
-  /* 
-   * If the user used the safe scalar shorthand, inherit the exact model mapping.
-   * We only proceed to verify category compatibility if the user explicitly 
-   * provided an alquimia_state in the JSON.
-   */
   if (item->alquimia_state == NULL)
   {
     *mapping = *matched_input;
     return true;
   }
-  /* 
-   * CATEGORY COMPATIBILITY VERIFICATION
-   * At this point, the user has explicitly specified a state field. We must ensure 
-   * they are not mixing up physical phases (e.g., trying to write a mineral volume 
-   * fraction into an aqueous concentration slot).
-   * 
-   * Allow flexibility (the requested state doesn't have to perfectly match the
-   * model's expected state) ONLY IF both states share a metadata name vector
-   * (e.g. total_mobile/total_immobile, or the two mineral fields).
-   */
   if (mapping->alquimia_state != matched_input->alquimia_state &&
       !SharesMetadataNames(mapping->alquimia_state,
                            matched_input->alquimia_state))
@@ -807,13 +736,9 @@ static bool BuildConfigMappings(
   return true;
 }
 
-/**
- * @brief Calculates the volume of liquid water per unit of bulk material volume.
- * @param[in] porosity The porosity of the porous medium in the range (0, 1].
- * @param[in] properties Supplies saturation for total concentration conversion.
- * @param[out] status Engine status populated if input bounds are violated.
- * @return The volume of water in liters per cubic meter of bulk material (L/m³).
- */
+/* Liquid water per bulk volume, 1000 * porosity * saturation [L/m^3]: the
+** factor between mol/L water and mol/m^3 bulk. Requires porosity and
+** saturation in (0, 1]; returns 0 after recording an error otherwise. */
 static double WaterVolumePerBulk(
     double porosity,
     const AlquimiaProperties *properties,
@@ -941,15 +866,9 @@ static double GetAlquimiaValue(
   return slot != NULL ? *slot : 0.0;
 }
 
-/**
- * @brief Reads a model input, converting immobile inventory to mol/L water.
- * @param[in] state State containing the model input value.
- * @param[in] properties Supplies saturation for water volume conversion.
- * @param[in] mapping Validated destination field and zero-based vector index.
- * @param[out] status Returns an engine integrity error for a non-finite model input, 
- *        or propagates errors from value extraction and volume calculation.
- * @return The standardized input value on success, or 0.0 after recording an error.
- */
+/* Reads one model input. total_immobile is converted from mol/m^3 bulk to
+** mol/L water, since tensors use mol/L for both phases. Non-finite inputs
+** are an error. */
 static double GetAlquimiaModelInput(
     const AlquimiaState *state,
     const AlquimiaProperties *properties,
@@ -1000,14 +919,7 @@ static void SetAlquimiaValue(
   }
 }
 
-/**
- * @brief Checks whether any mapping in an array refers to one state element.
- * @param[in] mappings Flattened input or output mappings.
- * @param[in] num_mappings Number of entries in @p mappings.
- * @param[in] alquimia_state State field to find.
- * @param[in] alquimia_state_index Zero-based state-vector index to find.
- * @return True when a mapping refers to the requested state element.
- */
+/* True when any of the mappings refers to (alquimia_state, index). */
 static bool HasMapping(
     const FeatureMapping *mappings,
     size_t num_mappings,
@@ -1027,15 +939,9 @@ static bool HasMapping(
   return false;
 }
 
-/**
- * @brief Caches whether each output explicitly maps its paired phase.
- * @param[in,out] onnx_state Engine containing the completed output mappings.
- * @param[out] status Returns an allocation error for the lookup array.
- * @return True when the output-aligned lookup is initialized.
- *
- * The one-time setup scan keeps paired-output detection out of the repeated
- * inference path.
- */
+/* For each mobile/immobile output, records at setup whether the
+** conservation step should be skipped: true when the model also outputs the
+** other phase, or does not read total_mobile_immobile for that component. */
 static bool BuildPairedOutputLookup(
     OnnxEngineState *onnx_state,
     AlquimiaEngineStatus *status)
@@ -1107,18 +1013,14 @@ static void SetAlquimiaModelOutput(
     AlquimiaEngineStatus *status)
 {
   int index = mapping.alquimia_state_index;
-  /* mapping = mobile, paired_mapping = immobile
-  ** mapping = immobile, paired_mapping = mobile
-  */
-  FeatureMapping paired_mapping;
+  FeatureMapping paired_mapping;  /* the other phase of the same component */
   double ncomp;
   double mapped_value;
   double paired_value;
   double old_water_volume;
   double new_water_volume;
 
-  /* Normalize every immobile output before assignment or conservation,
-   * including explicit paired outputs and fields without a mobile counterpart. */
+  /* Immobile outputs are mol/L water; convert to mol/m^3 bulk. */
   if (mapping.alquimia_state == kFieldTotalImmobile)
   {
     new_water_volume = WaterVolumePerBulk(new_porosity, properties, status);
@@ -1138,19 +1040,17 @@ static void SetAlquimiaModelOutput(
 
   paired_mapping = mapping;
 
-  /* The model runs the inference for mobile */
+  /* No paired slot in the state: just write the output. */
   if (mapping.alquimia_state == kFieldTotalMobile)
   {
     paired_mapping.alquimia_state = kFieldTotalImmobile;
-
-    /* Invalid immobile */
     if (state->total_immobile.data == NULL || index < 0 ||
         index >= state->total_immobile.size)
     {
       SetAlquimiaValue(state, mapping, value, status);
       return;
     }
-  } /* The model runs the inference for immobile */
+  }
   else if (mapping.alquimia_state == kFieldTotalImmobile)
   {
     paired_mapping.alquimia_state = kFieldTotalMobile;
@@ -1160,14 +1060,15 @@ static void SetAlquimiaModelOutput(
       SetAlquimiaValue(state, mapping, value, status);
       return;
     }
-  } /* Neither mobile nor immobile */
+  }
   else
   {
     SetAlquimiaValue(state, mapping, value, status);
     return;
   }
 
-  /* Explicit model outputs for both phases remain authoritative. */
+  /* The model outputs both phases (or has no derived total input): no
+  ** conservation step. */
   if (has_paired_mapping)
   {
     SetAlquimiaValue(state, mapping, value, status);
@@ -1198,31 +1099,19 @@ static void SetAlquimiaModelOutput(
     return;
   }
 
+  /* Conserve the bulk inventory ncomp [mol/m^3 bulk]:
+  **   water_volume_old * mobile_old + immobile_old
+  **     = water_volume_new * mobile_new + immobile_new
+  ** with mobile in mol/L and immobile in mol/m^3 bulk. */
   if (mapping.alquimia_state == kFieldTotalMobile)
   {
-    /* paired_mapping is immobile 
-    ** mapping is mobile [molarity]
-    ** Old total mobile + immobile = new mobile + immobile
-    ** The inference is for mobile [molarity]
-    ** We need to balance the total mobile [molarity] and immobile [moles/m^3 bulk]
-    ** ncomp [moles/m^3 bulk]
-    */
     ncomp = old_water_volume * mapped_value + paired_value;
-    /* Unit: [moles/m^3 bulk]*/
-    paired_value = ncomp - new_water_volume * value;
+    paired_value = ncomp - new_water_volume * value;  /* new immobile */
   }
   else
   {
-    /* paired_mapping is mobile
-    ** mapping is immobile [moles/m^3 bulk]
-    ** Old total mobile + immobile = new mobile + immobile
-    ** The immobile output has already been converted to [moles/m^3 bulk].
-    ** We need to balance the total mobile [molarity] and immobile [moles/m^3 bulk]
-    ** ncomp [moles/m^3 bulk]
-    */
     ncomp = old_water_volume * paired_value + mapped_value;
-    /* Unit: [molarity] */
-    paired_value = (ncomp - value) / new_water_volume;
+    paired_value = (ncomp - value) / new_water_volume;  /* new mobile */
   }
   if (!isfinite(ncomp) || !isfinite(paired_value))
   {
@@ -1240,11 +1129,7 @@ static void SetAlquimiaModelOutput(
   SetAlquimiaValue(state, paired_mapping, paired_value, status);
 }
 
-/**
- * @brief Releases one input or output tensor collection.
- * @param[in,out] tensors Tensor metadata and buffers to release.
- * @param[in] ort ONNX Runtime objects used to release names and OrtValue objects.
- */
+/* Releases one tensor collection; works on partially filled ones. */
 static void ReleaseOrtTensors(OrtTensor *tensors, Ort *ort)
 {
   size_t i;
@@ -1285,7 +1170,7 @@ static void ReleaseOrtTensors(OrtTensor *tensors, Ort *ort)
     free(tensors->total_size);
   }
 
-  /* ONNX Runtime allocates tensor names with the OrtAllocator. */
+  /* Names came from the session allocator. */
   if (ort->allocator != NULL)
   {
     if (tensors->names != NULL)
@@ -1303,14 +1188,8 @@ static void ReleaseOrtTensors(OrtTensor *tensors, Ort *ort)
   memset(tensors, 0, sizeof(*tensors));
 }
 
-/**
- * @brief Releases a partially initialized engine without replacing setup error details.
- * @param[in,out] onnx_state Address of the local engine pointer. Shutdown releases all
- *        resources initialized so far and sets this pointer to NULL.
- *
- * A stack-backed temporary status satisfies the shutdown contract while the
- * caller's original AlquimiaEngineStatus retains the setup failure.
- */
+/* Releases a partially initialized engine via shutdown, using a scratch
+** status so the caller's status keeps the setup error. */
 static void CleanupOnSetupFailure(OnnxEngineState **onnx_state)
 {
   char temp_message[kAlquimiaMaxStringLength];
@@ -1400,14 +1279,6 @@ static bool InspectTensor(
         return false;
       }
       dims[j] = 1;  /* batch size */
-    }
-    if ((size_t)dims[j] > SIZE_MAX / total_size)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "ONNX %s tensor '%s' element count overflows size_t.",
-               kind, tensors->names[i]);
-      return false;
     }
     total_size *= (size_t)dims[j];
   }
@@ -1510,13 +1381,6 @@ static bool InspectTensors(
     {
       return false;
     }
-    if (tensors->total_size[i] > SIZE_MAX - *total_flat)
-    {
-      status->error = kAlquimiaErrorEngineIntegrity;
-      snprintf(status->message, kAlquimiaMaxStringLength,
-               "Flattened ONNX %s element count overflows size_t.", kind);
-      return false;
-    }
     *total_flat += tensors->total_size[i];
   }
   return true;
@@ -1555,13 +1419,6 @@ void onnx_alquimia_setup(
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
 
-  if (onnx_engine_state == NULL)
-  {
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength,
-             "Invalid ONNX engine state destination in setup.");
-    return;
-  }
   *(OnnxEngineState **)onnx_engine_state = NULL;
 
   onnx_state = (OnnxEngineState *)calloc(1, sizeof(OnnxEngineState));
@@ -1662,39 +1519,28 @@ fail:
 
 /**
  * @brief Releases all adapter and ONNX Runtime resources.
- * @param[in,out] onnx_engine_state Address of the engine pointer created by setup.
+ * @param[in,out] onnx_engine_state Address of the engine pointer created by
+ *        setup; set to NULL on success.
  * @param[out] status Returns an invalid-engine error for a NULL engine.
  *
- * Tensor names must be released with the ONNX allocator, while dimensions,
- * buffers, mappings, and copied feature names use the C allocator. On success,
- * the caller's engine pointer is set to NULL.
+ * Works on partially initialized engines too (setup failures use it), since
+ * it skips members that were never created.
  */
 void onnx_alquimia_shutdown(
     void *onnx_engine_state,
     AlquimiaEngineStatus *status)
 {
-  /* Input and output tensors are created via independent ORT API calls during setup.
-  ** Since there is no strong coupling between them, they are released independently. */
   OnnxEngineState *onnx_state;
 
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
 
-  /* 
-  ** Memory Lifecycle & Cleanup Rules:
-  ** 1. Input/output tensors and underlying data arrays are created via 
-  **    independent API calls during setup and can be freed in any order.
-  ** 2. Core ONNX Runtime objects (session, env, etc.) maintain strict 
-  **    dependencies and must be released in reverse order of initialization (LIFO).
-  */
-  if (onnx_engine_state == NULL || *(OnnxEngineState **)onnx_engine_state == NULL)
+  onnx_state = EngineFromHandle(onnx_engine_state, "Shutdown", status);
+  if (onnx_state == NULL)
   {
-    status->error = kAlquimiaErrorInvalidEngine;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Invalid ONNX engine state pointer in shutdown.");
     return;
   }
 
-  onnx_state = *(OnnxEngineState **)onnx_engine_state;
   if (onnx_state->ort.g_ort != NULL)
   {
     /* Mapping feature names point into onnx_config (freed below). */
@@ -1705,7 +1551,6 @@ void onnx_alquimia_shutdown(
     free(onnx_state->output_has_paired_mapping);
     onnx_state->output_has_paired_mapping = NULL;
 
-    /* Input and output collections own independent tensors and buffers. */
     ReleaseOrtTensors(&onnx_state->input_tensors, &onnx_state->ort);
     ReleaseOrtTensors(&onnx_state->output_tensors, &onnx_state->ort);
 
@@ -1775,14 +1620,12 @@ void onnx_alquimia_processcondition(
   (void)aux_data;
   (void)properties;
 
-  if (onnx_engine_state == NULL || *(OnnxEngineState **)onnx_engine_state == NULL)
+  onnx_state = EngineFromHandle(onnx_engine_state, "ProcessCondition", status);
+  if (onnx_state == NULL)
   {
-    status->error = kAlquimiaErrorInvalidEngine;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Invalid ONNX engine state pointer in ProcessCondition.");
     return;
   }
 
-  onnx_state = *(OnnxEngineState **)onnx_engine_state;
 
   if (state == NULL)
   {
@@ -1791,14 +1634,12 @@ void onnx_alquimia_processcondition(
     return;
   }
 
-  // Initial condition provided by JSON
+  /* Hands-off mode: values come from the JSON condition with this name. */
   if (onnx_state->hands_off)
   {
-    // Point to the related onnx_config.conditions
     const OnnxAlquimiaCondition *matching_condition = NULL;
     size_t condition_index;
     
-    // Passed by the driver
     if (condition != NULL && condition->name != NULL)
     {
       for (condition_index = 0;
@@ -1807,7 +1648,6 @@ void onnx_alquimia_processcondition(
       {
         const OnnxAlquimiaCondition *current_condition =
             &onnx_state->onnx_config.conditions[condition_index];
-        // Find the related initial condition in the JSON file
         if (strcmp(current_condition->name, condition->name) == 0)
         {
           matching_condition = current_condition;
@@ -1913,28 +1753,17 @@ void onnx_alquimia_reactionstepoperatorsplit(
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
 
-  /* Input/output tensors will be reused
-  ** They will be freed in the shutdown*/
-  // Unused
   (void)delta_t;
   (void)aux_data;
   (void)natural_id;
 
-  if (onnx_engine_state == NULL || *(OnnxEngineState **)onnx_engine_state == NULL)
+  onnx_state = EngineFromHandle(onnx_engine_state, "ReactionStepOperatorSplit", status);
+  if (onnx_state == NULL)
   {
-    status->error = kAlquimiaErrorInvalidEngine;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Invalid ONNX engine state pointer in reactionstepoperatorsplit.");
     return;
   }
 
-  onnx_state = *(OnnxEngineState **)onnx_engine_state;
 
-  if (state == NULL)
-  {
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Invalid state in reactionstepoperatorsplit.");
-    return;
-  }
 
   old_porosity = state->porosity;
   new_porosity = old_porosity;
@@ -2029,15 +1858,11 @@ void onnx_alquimia_getauxiliaryoutput(
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
 
-  if (onnx_engine_state == NULL || *(OnnxEngineState **)onnx_engine_state == NULL)
+  if (EngineFromHandle(onnx_engine_state, "GetAuxiliaryOutput", status) == NULL)
   {
-    status->error = kAlquimiaErrorInvalidEngine;
-    snprintf(status->message, kAlquimiaMaxStringLength,
-             "Invalid ONNX engine state pointer.");
     return;
   }
 
-  /* Unused data */
   (void)properties;
   (void)state;
   (void)aux_data;
@@ -2064,29 +1889,18 @@ void onnx_alquimia_getproblemmetadata(
   status->error = kAlquimiaNoError;
   status->message[0] = '\0';
 
-  if (onnx_engine_state == NULL || *(OnnxEngineState **)onnx_engine_state == NULL)
+  onnx_state = EngineFromHandle(onnx_engine_state, "GetProblemMetaData", status);
+  if (onnx_state == NULL)
   {
-    status->error = kAlquimiaErrorInvalidEngine;
-    snprintf(status->message, kAlquimiaMaxStringLength, "Invalid ONNX engine state pointer.");
     return;
   }
 
-  onnx_state = *(OnnxEngineState **)onnx_engine_state;
-  if (meta_data == NULL)
-  {
-    status->error = kAlquimiaErrorEngineIntegrity;
-    snprintf(status->message, kAlquimiaMaxStringLength,
-             "Invalid problem metadata destination for ONNX engine.");
-    return;
-  }
 
   for (i = 0; i < onnx_state->total_flat_inputs; ++i)
   {
-    /* Directly point to the OnnxEngine-> input_mappings */ 
     FeatureMapping mapping = onnx_state->input_mappings[i];
     AlquimiaVectorString *metadata_name = MetadataNamesForMapping(
         meta_data, mapping.alquimia_state);
-    /* All the manipulation is to the OnnxEngine */
     StoreMetadataName(metadata_name, mapping.alquimia_state_index, mapping.feature);
   }
   for (i = 0; i < onnx_state->total_flat_outputs; ++i)
